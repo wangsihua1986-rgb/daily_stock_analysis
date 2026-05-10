@@ -40,6 +40,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [文档] 新增可审计兼容证据交叉链：`Config._load_from_env()` 优先级为 `LITELLM_CONFIG` > `LLM_CHANNELS` > legacy，回退路径与回滚策略与 `tests/test_llm_channel_config.py`、`tests/test_market_review_runtime.py`、`tests/test_analysis_api_contract.py` 对齐。
 - [修复] 修正大盘复盘 Windows fallback 锁的进程存活探测，避免使用 `os.kill(pid, 0)` 误伤正在运行的复盘进程。
 - [改进] Web 首页接入首次启动配置状态，基础配置未完成时提示缺口并引导进入系统设置。
+- [文档] 移除 README、完整指南与配置指南中的 PR/文档同步临时说明，改为面向使用者的常驻说明。
 
 ## [3.15.0] - 2026-05-05
 

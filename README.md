@@ -17,8 +17,6 @@
 
 [**功能特性**](#-功能特性) · [**快速开始**](#-快速开始) · [**推送效果**](#-推送效果) · [**文档中心**](docs/INDEX.md) · [**完整指南**](docs/full-guide.md) · [**常见问题**](docs/FAQ.md) · [**更新日志**](docs/CHANGELOG.md)
 
-> 本次仅更新文档与部署说明，未随本次改动新增后端运行时能力；Anspire / AIHubMix / SerpAPI 等配置为现有能力的说明口径。
-
 简体中文 | [English](docs/README_EN.md) | [繁體中文](docs/README_CHT.md)
 
 </div>

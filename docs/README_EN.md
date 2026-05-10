@@ -19,8 +19,6 @@ Analyze your watchlist daily -> generate a decision dashboard -> push to Telegra
 
 [**Key Features**](#-key-features) · [**Quick Start**](#-quick-start) · [**Sample Output**](#-sample-output) · [**Documentation Index**](./INDEX_EN.md) · [**Full Guide**](./full-guide_EN.md) · [**FAQ**](./FAQ_EN.md) · [**Changelog**](./CHANGELOG.md)
 
-> This PR-doc update is documentation-only and does not introduce runtime implementation changes. Provider recommendations for Anspire / AIHubMix / SerpAPI reflect existing runtime capabilities and configuration semantics.
-
 English | [简体中文](../README.md) | [繁體中文](README_CHT.md)
 
 </div>
