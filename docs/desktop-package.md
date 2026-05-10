@@ -80,7 +80,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build-all.ps1
 2. 由自动打 tag 工作流生成版本（或手动创建 tag）
 3. `desktop-release` 工作流自动构建并把两个平台安装包附加到对应 GitHub Release
 
-## 发版前可复现验证（当前 PR 验收）
+## 发版前可复现验证（桌面更新链路）
 
 桌面端自动更新链路依赖 Windows NSIS 安装产物、`latest.yml` 与 `*.blockmap` 元数据。当前桌面 CI 不覆盖 `desktop-release` 打包产物可发布链路，提交前建议补充如下本地验证：
 
@@ -96,7 +96,7 @@ npm run build
 2. 回到桌面端，补齐依赖、运行 preload 单测、再执行 Electron 打包
 
 ```bash
-cd ../apps/dsa-desktop
+cd ../dsa-desktop
 npm ci
 npm test
 npm run build
@@ -135,7 +135,19 @@ echo \"- *.blockmap\"
 echo \"并确保 latest.yml 中 version 与 tag 的语义化版本一致\"
 ```
 
-5. Windows/NSIS 产物与 GitHub Release 元数据一致性请在 Windows 环境通过 `.github/workflows/desktop-release.yml` 的发布链路复核（可人工触发 workflow）。
+5. Windows/NSIS 产物与发布附件一致性请在 Windows 环境手动验证（可人工触发发布流程），并在升级后核对运行时文件留存：
+
+   1. 安装前后分别记录安装目录中的 `.env`、`data/stock_analysis.db`、`logs/desktop.log` 的 SHA256；
+   2. 确认桌面端下一次启动后，上述文件仍存在且与安装前记录一致；
+   3. 如不一致，可在应用退出后检查用户数据目录中的 `.dsa-desktop-update-backup` 是否清理完整，并结合最新日志串联排查。
+
+Windows 平台建议使用 PowerShell 执行：
+
+```bash
+Get-FileHash .env,data\\stock_analysis.db,logs\\desktop.log -Algorithm SHA256
+```
+
+说明：应用已在 Windows NSIS 安装版的“重启安装”前备份安装目录旁上述运行时文件并尝试恢复，目的是降低更新过程中文件丢失风险；若恢复失败，桌面端会显示更新安装错误并保留手动下载路径供回退处理。
 
 ### 分步打包
 

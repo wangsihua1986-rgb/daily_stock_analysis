@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [新功能] Windows 桌面安装版接入 electron-updater，发现新版本后可后台下载并在用户确认后重启安装；Release 工作流同步上传自动更新所需元数据。
 - [测试] 完善桌面端更新链路验收说明：补充 `apps/dsa-desktop` 与打包产物元数据的本地验证步骤（Web 构建、桌面测试/构建、`latest.yml` 与 `*.blockmap` 检查），并明确 Windows/NSIS 部分需在 Windows 发布链路复核。
 - [文档] 强化桌面打包文档：补充 `latest.yml` / `*.blockmap` 与 `desktop-release` tag/version 一致性核验清单，明确非 Windows 环境下需在平台限制里补充说明。
+- [修复] 为 Windows NSIS 安装版自动更新加入安装目录运行时文件（`.env`、`data/stock_analysis.db`、`logs/desktop.log`）备份与首次启动恢复链路，降低 `quitAndInstall` 升级时配置与数据库丢失风险，并同步补充可复核核验说明。
 - [修复] 清理提交中的临时探测文件（`node_modules_exists.txt` 与 `node_modules_ls_check.txt`），避免污染桌面/前端改动范围。
 
 - [新功能] Web 系统设置页开放 `.env` 配置备份导入/导出，复用键级覆盖、配置版本冲突保护和重载链路；Web 端在 `ADMIN_AUTH_ENABLED=false` 时该入口为禁用状态。

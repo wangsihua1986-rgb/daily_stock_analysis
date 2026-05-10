@@ -29,6 +29,13 @@ const GITHUB_REPO = 'daily_stock_analysis';
 const RELEASES_PAGE_URL = `https://github.com/${GITHUB_OWNER}/${GITHUB_REPO}/releases`;
 const LATEST_RELEASE_API_URL = `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/releases/latest`;
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
+const DESKTOP_UPDATE_BACKUP_DIR = '.dsa-desktop-update-backup';
+const DESKTOP_UPDATE_BACKUP_MANIFEST_FILE = 'runtime-state.json';
+const DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES = Object.freeze([
+  '.env',
+  path.join('data', 'stock_analysis.db'),
+  path.join('logs', 'desktop.log'),
+]);
 
 const UPDATE_STATUS = Object.freeze({
   IDLE: 'idle',
@@ -379,6 +386,128 @@ function resolveAppDir() {
   return app.getPath('userData');
 }
 
+function resolveUpdateBackupRoot() {
+  return path.join(app.getPath('userData'), DESKTOP_UPDATE_BACKUP_DIR);
+}
+
+function resolveUpdateBackupManifestPath() {
+  return path.join(resolveUpdateBackupRoot(), DESKTOP_UPDATE_BACKUP_MANIFEST_FILE);
+}
+
+function resolveRuntimeFileEntries(baseDir = resolveAppDir()) {
+  return DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES.map((relativePath) => ({
+    relativePath,
+    absolutePath: path.join(baseDir, relativePath),
+    backupPath: path.join(resolveUpdateBackupRoot(), relativePath),
+  }));
+}
+
+function readUpdateBackupManifest() {
+  const manifestPath = resolveUpdateBackupManifestPath();
+  if (!fs.existsSync(manifestPath)) {
+    return null;
+  }
+
+  try {
+    const manifestText = fs.readFileSync(manifestPath, 'utf-8');
+    const manifest = JSON.parse(manifestText);
+    if (!manifest || typeof manifest !== 'object') {
+      return null;
+    }
+    return manifest;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function cleanupUpdateBackupRoot() {
+  try {
+    fs.rmSync(resolveUpdateBackupRoot(), { recursive: true, force: true });
+  } catch (_error) {
+  }
+}
+
+function normalizeBackupFileList(manifest) {
+  if (manifest && Array.isArray(manifest.files) && manifest.files.length) {
+    return manifest.files.filter((item) => typeof item === 'string' && item.trim()).map((item) => item.trim());
+  }
+  return DESKTOP_UPDATE_RUNTIME_RELATIVE_FILES.slice();
+}
+
+function backupPackagedRuntimeState() {
+  if (!isWindowsNsisInstalledApp()) {
+    return;
+  }
+
+  const runtimeEntries = resolveRuntimeFileEntries();
+  const backedUpFiles = [];
+
+  cleanupUpdateBackupRoot();
+  ensureDirectory(resolveUpdateBackupRoot());
+
+  runtimeEntries.forEach(({ relativePath, absolutePath, backupPath }) => {
+    if (!fs.existsSync(absolutePath)) {
+      return;
+    }
+    ensureDirectory(path.dirname(backupPath));
+    fs.copyFileSync(absolutePath, backupPath);
+    backedUpFiles.push(relativePath);
+  });
+
+  if (!backedUpFiles.length) {
+    return;
+  }
+
+  fs.writeFileSync(
+    resolveUpdateBackupManifestPath(),
+    JSON.stringify(
+      {
+        backedAt: new Date().toISOString(),
+        appVersion: resolveDesktopVersion(),
+        files: backedUpFiles,
+      },
+      null,
+      2
+    ),
+    'utf-8'
+  );
+}
+
+function restorePackagedRuntimeStateFromBackup() {
+  if (!isWindowsNsisInstalledApp()) {
+    return;
+  }
+
+  const manifest = readUpdateBackupManifest();
+  if (!manifest) {
+    return;
+  }
+
+  const appDir = resolveAppDir();
+  const backupRoot = resolveUpdateBackupRoot();
+  const runtimeEntries = resolveRuntimeFileEntries(appDir);
+  const relativeFiles = normalizeBackupFileList(manifest);
+  const restored = [];
+
+  relativeFiles.forEach((relativePath) => {
+    const entry = runtimeEntries.find((candidate) => candidate.relativePath === relativePath);
+    const source = path.join(backupRoot, relativePath);
+    const target = entry ? entry.absolutePath : path.join(appDir, relativePath);
+    if (!fs.existsSync(source)) {
+      return;
+    }
+    ensureDirectory(path.dirname(target));
+    fs.copyFileSync(source, target);
+    restored.push(relativePath);
+  });
+
+  cleanupUpdateBackupRoot();
+
+  if (restored.length) {
+    console.log(`[update] restored runtime files from backup: ${restored.join(', ')}`);
+  }
+}
+
 function resolveBackendPath() {
   if (process.env.DSA_BACKEND_PATH) {
     return process.env.DSA_BACKEND_PATH;
@@ -397,15 +526,25 @@ function resolveBackendPath() {
   return null;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+function ensureDirectory(dirPath) {
+  if (!fs.existsSync(dirPath)) {
+    fs.mkdirSync(dirPath, { recursive: true });
+  }
+}
+
 function initLogging() {
   const appDir = app.isPackaged ? path.dirname(app.getPath('exe')) : app.getPath('userData');
   logFilePath = path.join(appDir, 'logs', 'desktop.log');
   
   // 确保日志目录存在
   const logDir = path.dirname(logFilePath);
-  if (!fs.existsSync(logDir)) {
-    fs.mkdirSync(logDir, { recursive: true });
-  }
+  ensureDirectory(logDir);
   
   logLine('Desktop app starting');
 }
@@ -907,8 +1046,33 @@ async function installDownloadedUpdate() {
     releaseUrl: desktopUpdateState?.releaseUrl || RELEASES_PAGE_URL,
     message: '正在重启并安装更新...',
   });
-  logLine('[update] quit and install requested');
+  logLine('[update] stop backend and backup runtime data before install');
   stopBackend();
+  cleanupUpdateBackupRoot();
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      backupPackagedRuntimeState();
+      break;
+    } catch (error) {
+      if (attempt === 3) {
+        setDesktopUpdateState({
+          status: UPDATE_STATUS.ERROR,
+          updateMode: UPDATE_MODE.AUTO,
+          currentVersion: resolveDesktopVersion(),
+          latestVersion: desktopUpdateState?.latestVersion || '',
+          releaseUrl: desktopUpdateState?.releaseUrl || RELEASES_PAGE_URL,
+          checkedAt: new Date().toISOString(),
+          message: `更新安装准备失败：${error instanceof Error ? error.message : String(error)}`,
+        });
+        throw error;
+      }
+
+      await sleep(300 * attempt);
+    }
+  }
+
+  logLine('[update] quit and install requested');
   updater.quitAndInstall(false, true);
   return true;
 }
@@ -1115,6 +1279,9 @@ ipcMain.handle('desktop:open-release-page', async (_event, releaseUrl) => {
 });
 
 async function createWindow() {
+  if (isWindowsNsisInstalledApp()) {
+    restorePackagedRuntimeStateFromBackup();
+  }
   initLogging();
   setDesktopUpdateState({
     status: UPDATE_STATUS.IDLE,
