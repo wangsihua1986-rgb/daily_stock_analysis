@@ -20,6 +20,46 @@ for _mod in ("litellm", "google.generativeai", "google.genai", "anthropic"):
 import pytest
 from unittest.mock import PropertyMock
 
+_OPENAI_COMPATIBILITY_PAYLOAD_FIXTURES = [
+    # Repro case 1 (Issue #1279): OpenAI-compatible provider message.content is None while text is in content_blocks.
+    (
+        "openai/cpa-compatible",
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": None,
+                        "content_blocks": [
+                            {"type": "text", "text": "block "},
+                            {"type": "text", "text": "response"},
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5},
+        },
+        "block response",
+    ),
+    # Repro case 2: OpenAI-compatible provider returns message.content as list-of-blocks.
+    (
+        "openai/list-content-provider",
+        {
+            "choices": [
+                {
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "list "},
+                            {"type": "text", "text": "response"},
+                        ],
+                    },
+                }
+            ],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
+        },
+        "list response",
+    ),
+]
+
 
 # ---------------------------------------------------------------------------
 # Analyzer.generate_text()
@@ -141,37 +181,27 @@ class TestAnalyzerGenerateText:
         assert dispatch_calls[0]["stream"] is True
         assert "stream" not in dispatch_calls[1]
 
-    def test_call_litellm_extracts_message_content_blocks_when_content_is_null(self):
+    @pytest.mark.parametrize(
+        "provider_model,response_payload,expected_text",
+        _OPENAI_COMPATIBILITY_PAYLOAD_FIXTURES,
+        ids=["issue1279-message-content-null", "issue1279-message-content-list"],
+    )
+    def test_call_litellm_extracts_external_provider_text_shapes(self, provider_model, response_payload, expected_text):
         analyzer = self._make_analyzer()
         analyzer._config_override = SimpleNamespace(
-            litellm_model="openai/cpa-compatible",
+            litellm_model=provider_model,
             litellm_fallback_models=[],
             llm_model_list=[],
         )
-        response = SimpleNamespace(
-            choices=[
-                SimpleNamespace(
-                    message=SimpleNamespace(
-                        content=None,
-                        content_blocks=[
-                            {"type": "text", "text": "block "},
-                            {"type": "text", "text": "response"},
-                        ],
-                    ),
-                )
-            ],
-            usage=SimpleNamespace(prompt_tokens=2, completion_tokens=3, total_tokens=5),
-        )
-
-        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
+        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response_payload):
             text, model_used, usage = analyzer._call_litellm(
                 "prompt",
                 {"max_tokens": 128, "temperature": 0.2},
             )
 
-        assert text == "block response"
-        assert model_used == "openai/cpa-compatible"
-        assert usage == {"prompt_tokens": 2, "completion_tokens": 3, "total_tokens": 5}
+        assert text == expected_text
+        assert model_used == provider_model
+        assert usage == response_payload["usage"]
 
     def test_call_litellm_falls_back_to_message_content_when_blocks_empty(self):
         analyzer = self._make_analyzer()
@@ -199,37 +229,6 @@ class TestAnalyzerGenerateText:
         assert text == "message response"
         assert model_used == "openai/deepseek-chat"
         assert usage == {}
-
-    def test_call_litellm_extracts_list_message_content_from_dict_response(self):
-        analyzer = self._make_analyzer()
-        analyzer._config_override = SimpleNamespace(
-            litellm_model="openai/list-content-provider",
-            litellm_fallback_models=[],
-            llm_model_list=[],
-        )
-        response = {
-            "choices": [
-                {
-                    "message": {
-                        "content": [
-                            {"type": "text", "text": "list "},
-                            {"type": "text", "text": "response"},
-                        ],
-                    },
-                }
-            ],
-            "usage": {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7},
-        }
-
-        with patch.object(analyzer, "_dispatch_litellm_completion", return_value=response):
-            text, model_used, usage = analyzer._call_litellm(
-                "prompt",
-                {"max_tokens": 128, "temperature": 0.2},
-            )
-
-        assert text == "list response"
-        assert model_used == "openai/list-content-provider"
-        assert usage == {"prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7}
 
     def test_call_litellm_normalizes_kimi_k26_temperature(self):
         analyzer = self._make_analyzer()
