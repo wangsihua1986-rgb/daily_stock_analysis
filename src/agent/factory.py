@@ -59,6 +59,19 @@ class SkillPromptState:
     technical_skill_policy: str
 
 
+def _coerce_config_int(raw_value: object, default: int) -> int:
+    """Coerce optional numeric config values to int with a fallback default.
+
+    This protects test doubles and incomplete config objects from propagating
+    mock-like values (e.g., MagicMock attributes) into strict numeric paths.
+    """
+
+    try:
+        return int(raw_value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
 def _normalize_skill_ids(
     skill_ids: Optional[List[str]],
     *,
@@ -325,8 +338,14 @@ def build_agent_executor(config=None, skills: Optional[List[str]] = None):
         skill_instructions=prompt_state.skill_instructions,
         default_skill_policy=prompt_state.default_skill_policy,
         use_legacy_default_prompt=prompt_state.use_legacy_default_prompt,
-        max_steps=getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
-        timeout_seconds=getattr(config, "agent_orchestrator_timeout_s", 0),
+        max_steps=_coerce_config_int(
+            getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
+            AGENT_MAX_STEPS_DEFAULT,
+        ),
+        timeout_seconds=_coerce_config_int(
+            getattr(config, "agent_orchestrator_timeout_s", 0),
+            0,
+        ),
     )
 
 
@@ -346,7 +365,10 @@ def _build_orchestrator(config, registry, llm_adapter, skill_manager, *, technic
         llm_adapter=llm_adapter,
         skill_instructions=skill_manager.get_skill_instructions(),
         technical_skill_policy=technical_skill_policy,
-        max_steps=getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
+        max_steps=_coerce_config_int(
+            getattr(config, "agent_max_steps", AGENT_MAX_STEPS_DEFAULT),
+            AGENT_MAX_STEPS_DEFAULT,
+        ),
         mode=mode,
         skill_manager=skill_manager,
         config=config,
