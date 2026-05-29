@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 - [修复] 收口 Web 中文界面残留英文文案与设置页 help 缺口，回测页改为中文展示，并让 Web 设置页仅展示已注册且带说明的配置项。
 
-- [文档] `References #1497` 的边界说明（仅文档说明，不是运行时交付）：本次仅更新文档，不包含运行时改造；`SCHEDULE_TIME` 仍仅影响本地内置调度（`python main.py --schedule`），`GitHub Actions` 的触发时点仍由 `00-daily-analysis.yml` 的固定 `cron` 决定（周一到周五 10:00 UTC / 北京18:00）；本项属于 `docs` 范围，验收范围限定为边界说明一致性与 changelog 同步，PR 元信息应以 `docs` 归类并使用 `References #1497`，`#1497` 的运行时触发能力仍需后续 PR 实现，不应将本变更作为 issue 关闭依据。
+- [文档] `Refs #1497` 的边界说明（仅文档说明，不是运行时交付）：本次仅更新文档，不包含运行时改造；`SCHEDULE_TIME` 仍仅影响本地内置调度（`python main.py --schedule`），`GitHub Actions` 的触发时点仍由 `00-daily-analysis.yml` 的固定 `cron` 决定（周一到周五 10:00 UTC / 北京18:00）；本项属于 `docs` 范围，验收范围限定为边界说明一致性、文档双语同步、changelog 同步与 PR 模板提示对齐，PR 元信息应以 `docs` 归类并使用 `Refs #1497`，`#1497` 的运行时触发能力仍需后续 PR 实现，不应将本变更作为 issue 关闭依据。
 
 ## [3.19.0] - 2026-05-29
 
