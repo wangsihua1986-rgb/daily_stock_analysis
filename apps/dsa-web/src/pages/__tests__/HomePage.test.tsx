@@ -510,7 +510,7 @@ describe('HomePage', () => {
       },
     };
 
-    vi.mocked(historyApi.getList).mockImplementation((params: { stockCode?: string; startDate?: string }) => {
+    vi.mocked(historyApi.getList).mockImplementation((params: { stockCode?: string; startDate?: string } = {}) => {
       if (!Object.prototype.hasOwnProperty.call(params, 'stockCode')) {
         return Promise.resolve({
           total: 1,
