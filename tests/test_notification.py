@@ -658,6 +658,92 @@ class TestNotificationServiceReportGeneration(unittest.TestCase):
         self.assertEqual(out.count("数据缺失，无法判断"), 0)
 
     @mock.patch("src.notification.get_config")
+    def test_generate_chat_report_uses_readable_im_blocks(self, mock_get_config: mock.MagicMock):
+        mock_get_config.return_value = _make_config(report_renderer_enabled=False)
+        service = NotificationService()
+        result = AnalysisResult(
+            code="600519",
+            name="贵州茅台",
+            sentiment_score=59,
+            trend_prediction="看多",
+            operation_advice="持有观察",
+            decision_type="hold",
+            confidence_level="中",
+            analysis_summary="资金流数据缺失，先观察再处理。",
+            model_used="gemini/gemini-3-flash-preview",
+            dashboard={
+                "core_conclusion": {
+                    "one_sentence": "资金流数据缺失，买入结论缺少资金面确认，先按观察处理。",
+                    "time_sensitivity": "短线需要等待资金恢复。",
+                    "position_advice": {
+                        "no_position": "空仓先不追买，等待资金流恢复。",
+                        "has_position": "持仓以关键支撑为风控线。",
+                    },
+                },
+                "intelligence": {
+                    "risk_alerts": ["MA20仍处于下行通道", "行业消费费增速压力仍在"],
+                    "positive_catalysts": ["MACD低位金叉", "估值具备安全边际"],
+                    "sentiment_summary": "市场情绪由悲观转向修复。",
+                    "earnings_outlook": "业绩稳健。",
+                },
+                "data_perspective": {
+                    "trend_status": {
+                        "ma_alignment": "空头排列（MA5<MA10<MA20）",
+                        "trend_score": 45,
+                    },
+                    "price_position": {
+                        "current_price": 1326.0,
+                        "ma5": 1292.85,
+                        "ma20": 1333.39,
+                        "support_level": 1302.77,
+                        "resistance_level": 1333.39,
+                    },
+                    "volume_analysis": {
+                        "volume_ratio": 1.42,
+                        "turnover_rate": 0.61,
+                        "volume_meaning": "成交额超100亿，多头回补意愿强烈。",
+                    },
+                    "chip_structure": {
+                        "profit_ratio": "数据缺失，无法判断",
+                        "avg_cost": "数据缺失，无法判断",
+                        "concentration": "数据缺失，无法判断",
+                    },
+                },
+                "battle_plan": {
+                    "sniper_points": {
+                        "ideal_buy": "1303.00（回踩MA10支撑）",
+                        "secondary_buy": "1320.00（分批建仓）",
+                        "stop_loss": "1270.00（近期低点支撑）",
+                        "take_profit": "1410.00（前期震荡平台压力）",
+                    },
+                    "position_strategy": {
+                        "suggested_position": "3-5成",
+                        "entry_plan": "当前价位可试探性买入1-2成。",
+                        "risk_control": "若收盘跌破1270元则执行止损退出。",
+                    },
+                    "action_checklist": [
+                        "乖离率 < 5%（当前2.56%）",
+                        "MACD 金叉确认",
+                        "MA5/10/20 尚未形成多头排列",
+                    ],
+                },
+            },
+        )
+        result.fundamental_context = self._make_fundamental_context()
+
+        out = service.generate_chat_report([result], report_date="2026-05-30")
+
+        self.assertIn("结论速览", out)
+        self.assertIn("数据透视", out)
+        self.assertIn("现价 1326.0", out)
+        self.assertIn("关键点位", out)
+        self.assertIn("理想买入：1303.00", out)
+        self.assertIn("仓位与风控", out)
+        self.assertIn("关联板块", out)
+        self.assertNotIn("|---------|", out)
+        self.assertNotIn("价格指标", out)
+
+    @mock.patch("src.notification.get_config")
     def test_generate_reports_hide_model_when_disabled(self, mock_get_config: mock.MagicMock):
         mock_get_config.return_value = _make_config(
             report_renderer_enabled=False,

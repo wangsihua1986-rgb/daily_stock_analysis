@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Windows 桌面端自动更新传给 NSIS 的 `/D=` 目录参数在包含空格时自动加引号，避免安装位置注册表被截断。
 - [chore] 新增通知报告渠道能力画像、PreparedMessage 与结构感知 Markdown 分片基础设施，为 #1311 全渠道渲染适配打底。
 - [改进] 优化飞书、企业微信、Telegram、Slack 通知报告格式化和结构感知分片，默认发送完整报告并改善表格、链接、代码块在 IM 渠道的可读性。
+- [改进] 聚合股票报告为企业微信、飞书、Telegram、Slack 新增 IM 专用版式，保留完整信息但改为分块短行展示，避免聊天窗口继续显示大段表格和重复字段。
 
 ## [3.19.0] - 2026-05-29
 

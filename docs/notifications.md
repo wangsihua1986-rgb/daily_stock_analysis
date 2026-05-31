@@ -39,6 +39,8 @@
 
 通知报告默认仍发送完整报告，不默认改成 summary-only，也不改变现有渠道路由、降噪或图片 opt-in 语义。#1311 的报告渲染优化只做渠道适配：保留报告章节、标题层级、信号/结论顺序和核心字段，再按平台能力清洗 Markdown 与安全分片。
 
+聚合股票报告在企业微信、飞书、Telegram 和 Slack 文本路径会先生成一份 IM 专用报告：同源使用完整 `AnalysisResult`，但把表格压成短行，把每只股票拆成「结论速览 / 数据透视 / 操作建议 / 关键点位 / 仓位与风控 / 风险机会 / 检查清单」等聊天窗口更易扫读的块。邮件、自定义 Webhook、ntfy、Gotify 等渠道仍使用原完整 Markdown 报告；IM 报告生成异常时会自动回退原报告，不影响通知主流程。
+
 渠道能力画像由 `src/notification_capabilities.py` 维护，包含 Markdown 类型、单条长度限制、card/image/file/link 支持情况和默认投递策略。发送前结果可用 `PreparedMessage` 表达，但现有发送器仍保留文本 fallback。
 
 当前已接入的报告格式化规则：

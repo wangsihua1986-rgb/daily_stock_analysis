@@ -42,6 +42,7 @@ from src.report_language import (
     get_chip_unavailable_reason,
     is_chip_structure_unavailable,
     localize_chip_health,
+    localize_confidence_level,
     localize_operation_advice,
     localize_trend_prediction,
     normalize_report_language,
@@ -1305,6 +1306,252 @@ class NotificationService(
             report_lines.append(f"*{labels['analysis_model_label']}：{', '.join(models)}*")
         
         return "\n".join(report_lines)
+
+    @staticmethod
+    def _chat_text(value: Any, max_len: Optional[int] = None) -> str:
+        if value is None:
+            return ""
+        text = str(value).strip()
+        if not text or text.upper() == "N/A":
+            return ""
+        if max_len is not None and len(text) > max_len:
+            return text[:max_len].rstrip() + "..."
+        return text
+
+    def _append_chat_bullets(
+        self,
+        lines: List[str],
+        title: str,
+        items: Any,
+        *,
+        limit: int = 3,
+        max_len: int = 90,
+    ) -> None:
+        if isinstance(items, str):
+            normalized = [items]
+        elif isinstance(items, (list, tuple)):
+            normalized = list(items)
+        else:
+            normalized = []
+        values = [self._chat_text(item, max_len) for item in normalized]
+        values = [item for item in values if item]
+        if not values:
+            return
+        lines.append(f"**{title}**")
+        for item in values[:limit]:
+            lines.append(f"- {item}")
+        lines.append("")
+
+    @staticmethod
+    def _chat_metric_line(pairs: List[Tuple[str, Any]]) -> str:
+        parts = []
+        for label, value in pairs:
+            text = str(value).strip() if value is not None else ""
+            if text and text.upper() != "N/A":
+                parts.append(f"{label} {text}")
+        return " ｜ ".join(parts)
+
+    def _chat_related_boards(self, result: AnalysisResult, *, limit: int = 5) -> str:
+        boards = self._get_fundamental_blocks(result).get("belong_boards") or []
+        names: List[str] = []
+        for item in boards:
+            if not isinstance(item, dict):
+                continue
+            name = self._chat_text(item.get("name"))
+            if name:
+                names.append(name)
+            if len(names) >= limit:
+                break
+        return " / ".join(names)
+
+    def generate_chat_report(
+        self,
+        results: List[AnalysisResult],
+        report_date: Optional[str] = None,
+        platform: str = "generic",
+    ) -> str:
+        """Generate a full but chat-optimized report for IM-style channels."""
+        if report_date is None:
+            report_date = datetime.now().strftime('%Y-%m-%d')
+        if not results:
+            return f"## {report_date} 决策报告\n\n暂无分析结果"
+
+        report_language = self._get_report_language(results)
+        labels = get_report_labels(report_language)
+        sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+        buy_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'buy')
+        sell_count = sum(1 for r in results if getattr(r, 'decision_type', '') == 'sell')
+        hold_count = sum(1 for r in results if getattr(r, 'decision_type', '') in ('hold', ''))
+        separator = "━━━━━━━━━━━━"
+        score_suffix = "分" if report_language == "zh" else " pts"
+
+        lines = [
+            f"## 🎯 {report_date} {labels['dashboard_title']}",
+            f"> {len(results)} {labels['stock_unit']} ｜ 🟢{labels['buy_label']} {buy_count} ｜ "
+            f"🟡{labels['watch_label']} {hold_count} ｜ 🔴{labels['sell_label']} {sell_count}",
+            "",
+            "**📌 结论速览**" if report_language == "zh" else "**📌 Summary**",
+        ]
+        for result in sorted_results:
+            _, signal_emoji, _ = self._get_signal_level(result)
+            stock_name = self._get_display_name(result, report_language)
+            lines.append(
+                f"- {signal_emoji} **{stock_name}({result.code})**："
+                f"{localize_operation_advice(result.operation_advice, report_language)} ｜ "
+                f"{result.sentiment_score}{score_suffix} ｜ "
+                f"{localize_trend_prediction(result.trend_prediction, report_language)}"
+            )
+        lines.append("")
+
+        for result in sorted_results:
+            _, signal_emoji, _ = self._get_signal_level(result)
+            stock_name = self._get_display_name(result, report_language)
+            dashboard = result.dashboard if hasattr(result, 'dashboard') and result.dashboard else {}
+            core = dashboard.get('core_conclusion', {}) if dashboard else {}
+            intel = dashboard.get('intelligence', {}) if dashboard else {}
+            data_persp = dashboard.get('data_perspective', {}) if dashboard else {}
+            battle = dashboard.get('battle_plan', {}) if dashboard else {}
+
+            one_sentence = self._chat_text(core.get('one_sentence') or result.analysis_summary, 140)
+            time_sense = self._chat_text(core.get('time_sensitivity') or labels['default_time_sensitivity'])
+            confidence = self._chat_text(localize_confidence_level(result.confidence_level, report_language))
+            lines.extend([
+                separator,
+                f"### {signal_emoji} {stock_name} ({result.code})",
+                (
+                    f"**{localize_operation_advice(result.operation_advice, report_language)}** ｜ "
+                    f"{result.sentiment_score}{score_suffix} ｜ "
+                    f"{localize_trend_prediction(result.trend_prediction, report_language)}"
+                    + (f" ｜ {confidence}" if confidence else "")
+                ),
+            ])
+            if one_sentence:
+                lines.extend(["", f"**一句话**：{one_sentence}"])
+            if time_sense:
+                lines.append(f"**时效**：{time_sense}")
+            lines.append("")
+
+            price_data = data_persp.get('price_position', {}) if data_persp else {}
+            trend_data = data_persp.get('trend_status', {}) if data_persp else {}
+            vol_data = data_persp.get('volume_analysis', {}) if data_persp else {}
+            chip_data = data_persp.get('chip_structure', {}) if data_persp else {}
+            current_price = (
+                price_data.get('current_price')
+                or getattr(result, 'current_price', None)
+                or (getattr(result, 'market_snapshot', None) or {}).get('price')
+            )
+            data_line = self._chat_metric_line([
+                ("现价", current_price),
+                ("MA5", price_data.get('ma5')),
+                ("MA20", price_data.get('ma20')),
+                ("支撑", price_data.get('support_level')),
+                ("压力", price_data.get('resistance_level')),
+            ])
+            trend_line = self._chat_metric_line([
+                ("均线", trend_data.get('ma_alignment')),
+                ("强度", f"{trend_data.get('trend_score')}/100" if trend_data.get('trend_score') is not None else ""),
+                ("量比", vol_data.get('volume_ratio')),
+                ("换手", f"{vol_data.get('turnover_rate')}%" if vol_data.get('turnover_rate') is not None else ""),
+            ])
+            if data_line or trend_line:
+                lines.append("**📊 数据透视**")
+                if data_line:
+                    lines.append(data_line)
+                if trend_line:
+                    lines.append(trend_line)
+                volume_meaning = self._chat_text(vol_data.get('volume_meaning'), 100)
+                if volume_meaning:
+                    lines.append(f"量能解读：{volume_meaning}")
+                if chip_data:
+                    if is_chip_structure_unavailable(chip_data):
+                        lines.append(f"筹码：{get_chip_unavailable_reason(chip_data, report_language)}")
+                    else:
+                        chip_line = self._chat_metric_line([
+                            ("获利盘", chip_data.get('profit_ratio')),
+                            ("成本", chip_data.get('avg_cost')),
+                            ("集中度", chip_data.get('concentration')),
+                        ])
+                        if chip_line:
+                            lines.append(f"筹码：{chip_line}")
+                else:
+                    chip_unavailable_reason = get_chip_unavailable_reason(data_persp, report_language)
+                    if chip_unavailable_reason:
+                        lines.append(f"筹码：{chip_unavailable_reason}")
+                lines.append("")
+
+            pos_advice = core.get('position_advice', {}) if core else {}
+            if pos_advice:
+                lines.append("**🧭 操作建议**")
+                no_position = self._chat_text(
+                    pos_advice.get('no_position') or localize_operation_advice(result.operation_advice, report_language),
+                    110,
+                )
+                has_position = self._chat_text(pos_advice.get('has_position'), 110)
+                if no_position:
+                    lines.append(f"- 空仓：{no_position}")
+                if has_position:
+                    lines.append(f"- 持仓：{has_position}")
+                lines.append("")
+
+            sniper = battle.get('sniper_points', {}) if battle else {}
+            point_items = [
+                ("理想买入", self._clean_sniper_value(sniper.get('ideal_buy')) if sniper else ""),
+                ("次优买入", self._clean_sniper_value(sniper.get('secondary_buy')) if sniper else ""),
+                ("止损", self._clean_sniper_value(sniper.get('stop_loss')) if sniper else ""),
+                ("目标", self._clean_sniper_value(sniper.get('take_profit')) if sniper else ""),
+            ]
+            point_lines = [f"{label}：{value}" for label, value in point_items if self._chat_text(value)]
+            if point_lines:
+                lines.append("**🎯 关键点位**")
+                for item in point_lines:
+                    lines.append(f"- {item}")
+                lines.append("")
+
+            position = battle.get('position_strategy', {}) if battle else {}
+            position_line = self._chat_text(position.get('suggested_position'))
+            entry_plan = self._chat_text(position.get('entry_plan'), 110)
+            risk_control = self._chat_text(position.get('risk_control'), 110)
+            if position_line or entry_plan or risk_control:
+                lines.append("**💰 仓位与风控**")
+                if position_line:
+                    lines.append(f"- 仓位：{position_line}")
+                if entry_plan:
+                    lines.append(f"- 建仓：{entry_plan}")
+                if risk_control:
+                    lines.append(f"- 风控：{risk_control}")
+                lines.append("")
+
+            self._append_chat_bullets(lines, "🚨 风险", intel.get('risk_alerts', []), limit=3)
+            self._append_chat_bullets(lines, "✨ 机会", intel.get('positive_catalysts', []), limit=3)
+
+            sentiment = self._chat_text(intel.get('sentiment_summary'), 100)
+            earnings = self._chat_text(intel.get('earnings_outlook'), 100)
+            latest_news = self._chat_text(intel.get('latest_news'), 120)
+            if sentiment or earnings or latest_news:
+                lines.append("**📰 消息与基本面**")
+                if sentiment:
+                    lines.append(f"- 情绪：{sentiment}")
+                if earnings:
+                    lines.append(f"- 业绩：{earnings}")
+                if latest_news:
+                    lines.append(f"- 最新：{latest_news}")
+                lines.append("")
+
+            checklist = battle.get('action_checklist', []) if battle else []
+            self._append_chat_bullets(lines, "✅ 检查清单", checklist, limit=6)
+
+            boards = self._chat_related_boards(result)
+            if boards:
+                lines.extend(["**🧩 关联板块**", boards, ""])
+
+        models = self._collect_models_used(results)
+        lines.extend([
+            separator,
+            f"*{labels['generated_at_label']}：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*",
+        ])
+        if models:
+            lines.append(f"*{labels['analysis_model_label']}：{', '.join(models)}*")
+        return "\n".join(lines).strip()
     
     def generate_wechat_dashboard(self, results: List[AnalysisResult]) -> str:
         """
