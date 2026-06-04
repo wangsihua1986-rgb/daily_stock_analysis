@@ -29,6 +29,9 @@ def test_macos_backend_build_script_collects_alphasift_adapter() -> None:
     assert "--collect-all" in script
     assert "cmd+=(\"--collect-all\" \"alphasift\")" in script
     assert "zipfile" in script
+    assert 'normalized.startswith("alphasift/dsa_adapter.")' in script
+    assert 'normalized.startswith("alphasift/dsa_adapter/")' in script
+    assert 'normalized.endswith("alphasift/__init__.py")' not in script
     assert "packaged_entry=\"${packaged_root}/stock_analysis\"" in script
     assert "--help" in script
     assert "PathFinder.find_spec(" not in script

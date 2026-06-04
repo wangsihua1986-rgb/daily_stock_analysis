@@ -188,10 +188,8 @@ def _zip_contains_alphasift_adapter(root: pathlib.Path) -> bool:
         try:
             with zipfile.ZipFile(candidate, "r") as zf:
                 for name in zf.namelist():
-                    normalized = name.replace("\\", "/")
-                    if not normalized.startswith("alphasift/"):
-                        continue
-                    if "/dsa_adapter." in normalized or normalized.endswith("alphasift/__init__.py") or normalized.endswith("alphasift/__init__.pyc"):
+                    normalized = name.replace("\\", "/").lstrip("/")
+                    if normalized.startswith("alphasift/dsa_adapter.") or normalized.startswith("alphasift/dsa_adapter/"):
                         print(f"OK (archive) from: {candidate}")
                         return True
         except Exception:
