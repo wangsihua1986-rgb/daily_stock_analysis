@@ -8,11 +8,12 @@ import {
   type AlphaSiftScreenTaskStatus,
   type AlphaSiftStrategy,
 } from '../api/alphasift';
-import { toApiErrorMessage } from '../api/error';
+import { formatParsedApiError, getParsedApiError, toApiErrorMessage, type ParsedApiError } from '../api/error';
 import { AppPage, Button, InlineAlert } from '../components/common';
 
 const MARKETS = [{ id: 'cn', label: 'A 股' }];
 const SCREEN_TASK_STORAGE_KEY = 'dsa.alphasift.activeScreenTask.v1';
+const SCREEN_TASK_POLL_INTERVAL_MS = 2000;
 
 type PersistedScreenTask = {
   taskId: string;
@@ -61,6 +62,9 @@ const clearPersistedScreenTask = () => {
     // Ignore storage cleanup failures.
   }
 };
+
+const isUnrecoverableScreenTaskError = (error: ParsedApiError) =>
+  error.title === '选股任务不可恢复';
 
 const formatScore = (score: AlphaSiftCandidate['score']) => {
   if (score == null || Number.isNaN(Number(score))) {
@@ -396,7 +400,7 @@ const StockScreeningPage: React.FC = () => {
 
       if (isRunningScreenTask(task.status)) {
         setLoading(true);
-        timer = window.setTimeout(pollTask, 2000);
+        timer = window.setTimeout(pollTask, SCREEN_TASK_POLL_INTERVAL_MS);
         return;
       }
 
@@ -415,10 +419,16 @@ const StockScreeningPage: React.FC = () => {
         if (!active) {
           return;
         }
-        setError(toApiErrorMessage(err, '无法获取选股任务状态，请重新运行选股。'));
-        setCandidates([]);
-        setScreenMeta(null);
-        finishTask();
+        const parsedError = getParsedApiError(err);
+        setError(formatParsedApiError(parsedError) || '暂时无法获取选股任务状态，稍后将自动重试。');
+        if (isUnrecoverableScreenTaskError(parsedError)) {
+          setCandidates([]);
+          setScreenMeta(null);
+          finishTask();
+          return;
+        }
+        setLoading(true);
+        timer = window.setTimeout(pollTask, SCREEN_TASK_POLL_INTERVAL_MS);
       }
     }
 

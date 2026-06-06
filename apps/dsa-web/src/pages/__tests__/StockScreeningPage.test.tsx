@@ -304,6 +304,31 @@ describe('StockScreeningPage', () => {
     expect(window.sessionStorage.getItem('dsa.alphasift.activeScreenTask.v1')).toBeNull();
   });
 
+  it('keeps a restored screening task recoverable when status polling times out', async () => {
+    getAlphaSiftStatus.mockResolvedValue({
+      enabled: true,
+      available: true,
+      installSpecIsDefault: true,
+    });
+    window.sessionStorage.setItem('dsa.alphasift.activeScreenTask.v1', JSON.stringify({
+      taskId: 'screen-task-1',
+      market: 'cn',
+      strategy: 'dual_low',
+      maxResults: 3,
+    }));
+    getScreenTask.mockRejectedValueOnce(Object.assign(new Error('timeout of 30000ms exceeded'), {
+      code: 'ECONNABORTED',
+    }));
+
+    render(<StockScreeningPage />);
+
+    expect(await screen.findByText('选股任务运行中')).toBeInTheDocument();
+    await waitFor(() => expect(getScreenTask).toHaveBeenCalledTimes(1));
+    expect(screen.getByText('选股运行中')).toBeInTheDocument();
+    expect(screen.getByText(/连接上游服务超时/)).toBeInTheDocument();
+    expect(window.sessionStorage.getItem('dsa.alphasift.activeScreenTask.v1')).toContain('screen-task-1');
+  });
+
   it('surfaces AlphaSift LLM fallback instead of showing empty LLM fields as normal', async () => {
     getAlphaSiftStatus.mockResolvedValueOnce({
       enabled: true,
