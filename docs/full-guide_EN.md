@@ -1198,7 +1198,7 @@ For review, include before/after screenshots (or equivalent accessible output) f
 - Settings page (`/settings`)
 - Side navigation (home/settings)
 
-If screenshots cannot be captured in this environment, include an access-proof note in PR description: run `python main.py --serve-only` or `npm run dev` in `apps/dsa-web`, open each page in both languages, and confirm text and labels update without reload, including browser document language syncing.
+This change already includes bilingual smoke-capture evidence for login/home/settings/side-navigation pages in `apps/dsa-web/e2e/smoke.spec.ts` (`smoke-login-page-zh`, `smoke-home-page-zh`, `smoke-home-page-en`, `smoke-settings-page-zh`, `smoke-settings-page-en`, `smoke-mobile-shell-nav`); if this test set cannot be executed, include a PR-level access-proof note by running `python main.py --serve-only` or `npm run dev` in `apps/dsa-web` and recording review environment details.
 
 ### API Endpoints
 

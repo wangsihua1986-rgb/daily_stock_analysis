@@ -1,6 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import {
+  persistUiLanguage,
   resolveInitialUiLanguage,
   UI_LANGUAGE_STORAGE_KEY,
   UiLanguageProvider,
@@ -57,6 +58,27 @@ describe('UiLanguageContext', () => {
       storage: createStorage(null),
       navigatorLike: { language: 'tr-TR', languages: ['tr-TR'] },
     })).toBe('zh');
+  });
+
+  it('falls back to browser language if storage getItem throws', () => {
+    const throwingStorage = createStorage('en');
+    throwingStorage.getItem = () => {
+      throw new Error('Storage getItem disabled');
+    };
+
+    expect(resolveInitialUiLanguage({
+      storage: throwingStorage,
+      navigatorLike: { language: 'en-US', languages: ['en-US'] },
+    })).toBe('en');
+  });
+
+  it('persists language preference via storage in a safe, non-throwing path', () => {
+    const throwingStorage = createStorage('zh');
+    throwingStorage.setItem = () => {
+      throw new Error('Storage setItem disabled');
+    };
+
+    expect(() => persistUiLanguage(throwingStorage, 'en')).not.toThrow();
   });
 
   it('switches UI language immediately and persists the explicit choice', () => {

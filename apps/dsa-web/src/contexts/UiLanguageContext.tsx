@@ -38,6 +38,30 @@ function getStoredUiLanguage(storage?: Storage | null): UiLanguage | null {
   }
 }
 
+export function getUiLanguageStorage(): Storage | null {
+  if (typeof window === 'undefined') {
+    return null;
+  }
+
+  try {
+    return window.localStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function persistUiLanguage(storage: Storage | null, language: UiLanguage): void {
+  if (!storage) {
+    return;
+  }
+
+  try {
+    storage.setItem(UI_LANGUAGE_STORAGE_KEY, language);
+  } catch {
+    // Ignore storage failures; in-memory language still updates.
+  }
+}
+
 function getBrowserUiLanguage(navigatorLike?: Pick<Navigator, 'language' | 'languages'> | null): UiLanguage {
   const languageCandidates = [
     ...(Array.isArray(navigatorLike?.languages) ? navigatorLike?.languages ?? [] : []),
@@ -79,7 +103,7 @@ function getRuntimeInitialLanguage(): UiLanguage {
   }
 
   return resolveInitialUiLanguage({
-    storage: window.localStorage,
+    storage: getUiLanguageStorage(),
     navigatorLike: window.navigator,
   });
 }
@@ -89,15 +113,7 @@ export const UiLanguageProvider: React.FC<{ children: React.ReactNode }> = ({ ch
 
   const setLanguage = useCallback((nextLanguage: UiLanguage) => {
     setLanguageState(nextLanguage);
-    if (typeof window === 'undefined') {
-      return;
-    }
-
-    try {
-      window.localStorage.setItem(UI_LANGUAGE_STORAGE_KEY, nextLanguage);
-    } catch {
-      // Ignore storage failures; the in-memory language switch still works.
-    }
+    persistUiLanguage(getUiLanguageStorage(), nextLanguage);
   }, []);
 
   useEffect(() => {

@@ -1367,7 +1367,7 @@ FastAPI 提供 RESTful API 服务，支持配置管理和触发分析。
 - 设置页（`/settings`）
 - 侧边导航（首页/设置页）
 
-若当前环境无法截图，可在 PR 说明中补充可访问证据：启动 `python main.py --serve-only` 或 `apps/dsa-web` 前端开发服务，确认上述页面在不同语言下可见文案确实切换，并记录复核时间与浏览器环境。
+本次改动已在 `apps/dsa-web/e2e/smoke.spec.ts` 中覆盖登录页、首页、设置页与侧边导航的中英文截图（`smoke-login-page-zh`、`smoke-home-page-zh`、`smoke-home-page-en`、`smoke-settings-page-zh`、`smoke-settings-page-en`、`smoke-mobile-shell-nav`）用于等价可视证据；如当前环境无法执行该套冒烟测试，再在 PR 说明中补充可访问证据（启动 `python main.py --serve-only` 或 `apps/dsa-web` 前端开发服务，并记录复核时间与浏览器环境）。
 
 ### API 接口
 

@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [修复] Agent 分析路径生成 AnalysisContextPack overview 前复用已落库日线分析上下文，避免日线已抓取成功仍显示 `daily_bars_missing`。
 - [新功能] Web 大盘复盘报告新增专用展示视图，历史入口和首页即时结果统一使用 Markdown/GFM 渲染并隐藏个股专属模块。
 - [新功能] 大盘复盘新增结构化 `market_review_payload`，Web、历史详情和推送统一基于结构化数据渲染，并保留 Markdown 兼容展示。
+- [文档] Web UI 语言切换只涉及独立 `dsa.uiLanguage` 持久化与界面文案国际化，不改写 `provider/model/base_url` 运行时配置保存与清理语义；回归依据见 `apps/dsa-web/src/contexts/__tests__/UiLanguageContext.test.tsx`（Storage 读写降级）与 `apps/dsa-web/src/hooks/__tests__/useSystemConfig.test.tsx`（非运行时配置保存保持 `LITELLM_MODEL`、`OPENAI_BASE_URL`、`OPENAI_VISION_MODEL`）。
 - [文档] 本次迭代仅重构大盘复盘展示链路（统一 Markdown/GFM 渲染与结构化 payload 渲染），不涉及 `LITELLM_*`、`LLM_*`、`provider/model/base_url` 等运行时配置语义；如需回退采用常规发布回滚。
 - [修复] 修正大盘复盘结构化 `breadth` 的可用性判断：当市场不支持/抓取失败（如美股、港股或 A 股 breadth 不可用）时不下发 `breadth`，前端展示“暂无数据”，避免误导性 0 值。
 - [修复] 明确大盘复盘语言行为调整为遵循全局 `report_language`，并在回退场景保持原语种提示（如美股/港股默认会按配置语言展示）；兼容性变化说明见该条款，无需额外改动 provider/model/base_url。
