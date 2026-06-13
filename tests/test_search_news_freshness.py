@@ -998,6 +998,33 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
         )
         self.assertEqual(resp.results[0].relevance_category, "direct_company_news")
 
+    def test_adult_term_platform_remediation_news_is_not_filtered(self) -> None:
+        """Platform enforcement/remediation articles are risk news, not service ads."""
+        fresh = datetime.now().date().isoformat()
+        service, _ = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+            response=_response(
+                [
+                    _result(
+                        "美团 03690 下架涉色情按摩会所商家",
+                        fresh,
+                        snippet="美团开展平台治理，清理涉色情低俗内容商家。",
+                        url="https://finance.example.invalid/news/03690-risk-remediation",
+                        source="finance.example.invalid",
+                    )
+                ]
+            ),
+        )
+
+        resp = service.search_stock_news("03690.HK", "美团", max_results=1)
+
+        self.assertEqual(
+            [item.title for item in resp.results],
+            ["美团 03690 下架涉色情按摩会所商家"],
+        )
+        self.assertEqual(resp.results[0].relevance_category, "direct_company_news")
+
     def test_contact_like_product_token_does_not_trigger_adult_spam_filter(self) -> None:
         """Product/version identifiers such as QQ2024 need adult context before filtering."""
         fresh = datetime.now().date().isoformat()
@@ -1068,6 +1095,36 @@ class SearchNewsFreshnessTestCase(unittest.TestCase):
                         fresh,
                         snippet="联系获取详情。",
                         url="https://spam.example.invalid/local/wechat-abc123",
+                        source="spam.example.invalid",
+                    ),
+                    _result(
+                        "腾讯控股 00700 发布回购公告",
+                        fresh,
+                        snippet="腾讯控股披露股份回购公告。",
+                        url="https://finance.example.invalid/news/00700-buyback",
+                        source="finance.example.invalid",
+                    ),
+                ]
+            ),
+        )
+
+        resp = service.search_stock_news("00700.HK", "腾讯控股", max_results=1)
+
+        self.assertEqual([item.title for item in resp.results], ["腾讯控股 00700 发布回购公告"])
+
+    def test_adult_phone_contact_is_filtered(self) -> None:
+        """Phone contact labels should count as contact signals with adult-service context."""
+        fresh = datetime.now().date().isoformat()
+        service, _ = self._create_service_with_mock_provider(
+            news_max_age_days=3,
+            news_strategy_profile="short",
+            response=_response(
+                [
+                    _result(
+                        "腾讯控股 00700 小姐上门 电话13800138000",
+                        fresh,
+                        snippet="联系获取详情。",
+                        url="https://spam.example.invalid/local/phone-13800138000",
                         source="spam.example.invalid",
                     ),
                     _result(

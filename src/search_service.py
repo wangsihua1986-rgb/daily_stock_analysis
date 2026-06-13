@@ -2228,7 +2228,8 @@ class SearchService:
         "会所", "技师", "全套", "套餐", "vip",
     )
     _ADULT_SERVICE_SPAM_CONTACT_RE = re.compile(
-        r"(?:^|[^a-z0-9])(?:yue|vx|wx|qq|wechat|weixin|微信号?|微[信讯])"
+        r"(?:^|[^a-z0-9])(?:yue|vx|wx|qq|wechat|weixin|微信号?|微[信讯]|"
+        r"电话|手机|联系电话|tel|phone|mobile)"
         r"[-_:\s：]*[a-z0-9][a-z0-9_-]{2,}(?:[^a-z0-9]|$)",
         re.IGNORECASE,
     )
@@ -2236,6 +2237,14 @@ class SearchService:
         "小姐", "按摩", "保健", "足浴", "桑拿", "会所", "技师",
         "全套", "包夜", "大保健", "推油",
         "约炮", "援交", "成人", "色情",
+    )
+    _ADULT_SERVICE_REMEDIATION_TERMS = (
+        "治理", "整治", "下架", "处罚", "监管", "打击", "清理",
+        "封禁", "整改", "内容安全", "低俗内容", "平台风险",
+    )
+    _ADULT_SERVICE_SOLICITATION_TERMS = (
+        "上门", "同城", "预约", "套餐", "包夜", "大保健",
+        "推油", "联系", "咨询", "加微信", "加qq", "vip",
     )
 
     def __init__(
@@ -2878,6 +2887,12 @@ class SearchService:
             cls._ADULT_SERVICE_SPAM_CONTACT_CONTEXT_TERMS,
         ):
             return True
+        has_remediation_context = cls._contains_any_news_term(
+            combined_text,
+            cls._ADULT_SERVICE_REMEDIATION_TERMS,
+        )
+        if has_remediation_context and not has_contact_signal:
+            return False
 
         if (
             "外围" in combined_text
@@ -2904,14 +2919,23 @@ class SearchService:
                 "大保健", "莞式", "推油", "成人", "色情",
             ),
         )
+        has_solicitation_signal = cls._contains_any_news_term(
+            combined_text,
+            cls._ADULT_SERVICE_SOLICITATION_TERMS,
+        )
         has_ambiguous_adult_phrase = cls._contains_any_news_term(
             combined_text,
             cls._ADULT_SERVICE_SPAM_AMBIGUOUS_TERMS,
         )
         if has_ambiguous_adult_phrase:
-            return has_service_anchor
+            return has_service_anchor and has_solicitation_signal
 
-        return has_adult_specific_anchor and has_service_anchor and context_hits >= 3
+        return (
+            has_adult_specific_anchor
+            and has_service_anchor
+            and has_solicitation_signal
+            and context_hits >= 3
+        )
 
     @classmethod
     def _score_news_relevance(
