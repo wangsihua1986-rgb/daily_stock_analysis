@@ -238,6 +238,36 @@ class ConfigEnvCompatibilityTestCase(unittest.TestCase):
 
     @patch("src.config.setup_env")
     @patch.object(Config, "_parse_litellm_yaml", return_value=[])
+    def test_news_intel_env_vars_do_not_affect_llm_layer(
+        self,
+        _mock_parse_yaml,
+        _mock_setup_env,
+    ) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                "STOCK_LIST": "600519",
+                "LITELLM_MODEL": "openai/gpt-5.5",
+                "OPENAI_MODEL": "gpt-5.5",
+                "OPENAI_API_KEY": "sk-openai-test",
+                "OPENAI_BASE_URL": "https://openai.example/v1",
+                "NEWS_INTEL_RETENTION_DAYS": "14",
+                "NEWS_INTEL_FETCH_TIMEOUT_SEC": "12",
+                "NEWS_INTEL_MAX_ITEMS_PER_SOURCE": "75",
+            },
+            clear=True,
+        ):
+            config = Config._load_from_env()
+
+        self.assertEqual(config.litellm_model, "openai/gpt-5.5")
+        self.assertEqual(config.openai_model, "gpt-5.5")
+        self.assertEqual(config.openai_base_url, "https://openai.example/v1")
+        self.assertEqual(config.news_intel_retention_days, 14)
+        self.assertEqual(config.news_intel_fetch_timeout_sec, 12.0)
+        self.assertEqual(config.news_intel_max_items_per_source, 75)
+
+    @patch("src.config.setup_env")
+    @patch.object(Config, "_parse_litellm_yaml", return_value=[])
     def test_report_language_prefers_preexisting_process_env_over_env_file(
         self,
         _mock_parse_yaml,

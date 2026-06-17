@@ -34,6 +34,12 @@ NEWS_INTEL_FETCH_TIMEOUT_SEC=8
 NEWS_INTEL_MAX_ITEMS_PER_SOURCE=50
 ```
 
+### 兼容性说明
+
+本节仅新增情报源持久化能力，不会改变现有模型 / provider / Base URL / LLM 配置兼容语义。
+`NEWS_INTEL_*` 仅影响情报源抓取、入库与清理逻辑，不会参与 `LITELLM_*`、`ANSPIRE_*`、`LLM_CHANNELS` 的解析与清理。
+回退路径为：移除上述变量并按既有 `.env`/历史 `LLM` 配置恢复默认行为。
+
 ## API
 
 所有接口位于 `/api/v1/intelligence`。
