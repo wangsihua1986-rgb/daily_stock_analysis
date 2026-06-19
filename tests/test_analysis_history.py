@@ -211,13 +211,28 @@ class AnalysisHistoryTestCase(unittest.TestCase):
         result = self._build_result()
         result.code = "005930"
         result.name = "Samsung Electronics"
+        persisted_phase_summary = {
+            **_market_phase_summary(),
+            "phase": "postmarket",
+            "market_local_time": "2025-01-02T16:10:00+09:00",
+            "session_date": "2025-01-02",
+            "effective_daily_bar_date": "2025-01-02",
+            "is_market_open_now": False,
+            "is_partial_bar": False,
+            "minutes_to_open": 900,
+            "minutes_to_close": None,
+            "trigger_source": "scheduled_job",
+            "analysis_intent": "postmarket",
+            "warnings": ["legacy_snapshot"],
+        }
+        expected_phase_summary = {**persisted_phase_summary, "market": "kr"}
 
         saved = self.db.save_analysis_history(
             result=result,
             query_id="query_kr_bare",
             report_type="simple",
             news_content="news",
-            context_snapshot={"market_phase_summary": _market_phase_summary()},
+            context_snapshot={"market_phase_summary": persisted_phase_summary},
             save_snapshot=True,
         )
         self.assertGreater(saved, 0)
@@ -228,10 +243,10 @@ class AnalysisHistoryTestCase(unittest.TestCase):
             detail = service.resolve_and_get_detail("query_kr_bare")
 
         self.assertEqual(listing["items"][0]["stock_code"], "005930.KS")
-        self.assertEqual(listing["items"][0]["market_phase_summary"]["market"], "kr")
+        self.assertEqual(listing["items"][0]["market_phase_summary"], expected_phase_summary)
         self.assertIsNotNone(detail)
         self.assertEqual(detail["stock_code"], "005930.KS")
-        self.assertEqual(detail["market_phase_summary"]["market"], "kr")
+        self.assertEqual(detail["market_phase_summary"], expected_phase_summary)
 
     def test_save_analysis_history_persists_sniper_columns_via_shared_parser(self) -> None:
         """迁出 sniper parser 后历史狙击点位列仍按原规则保存。"""

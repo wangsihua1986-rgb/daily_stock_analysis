@@ -70,8 +70,8 @@ from src.analysis_context_pack_overview import (
     extract_analysis_context_pack_overview,
     sanitize_context_snapshot_for_api,
 )
-from src.market_phase_summary import extract_market_phase_summary, render_market_phase_summary
-from src.core.trading_calendar import build_market_phase_context, get_market_for_stock
+from src.market_phase_summary import extract_market_phase_summary
+from src.core.trading_calendar import get_market_for_stock
 from src.report_language import get_localized_stock_name, normalize_report_language
 from src.schemas.decision_action import build_action_fields
 from src.services.name_to_code_resolver import resolve_name_to_code
@@ -841,15 +841,9 @@ def _display_market_phase_summary(stock_code: Any, context_snapshot: Any) -> Any
     if market not in {"jp", "kr"}:
         return summary
 
-    try:
-        return render_market_phase_summary(build_market_phase_context(market=market).to_dict())
-    except Exception as exc:
-        logger.debug(
-            "rebuild JP/KR market phase summary failed: code=%s err=%s",
-            display_code,
-            exc,
-        )
+    if not isinstance(summary, dict):
         return summary
+    return {**summary, "market": market}
 
 
 def _prepare_report_for_task_enrichment(

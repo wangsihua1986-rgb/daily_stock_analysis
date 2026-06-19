@@ -16,7 +16,7 @@ from datetime import date, datetime, timedelta
 from typing import Optional, Dict, Any, List, Tuple, TYPE_CHECKING
 
 from src.config import get_config, resolve_news_window_days
-from src.core.trading_calendar import build_market_phase_context, get_market_for_stock
+from src.core.trading_calendar import get_market_for_stock
 from src.data.stock_index_loader import resolve_index_stock_code
 from src.report_language import (
     get_bias_status_emoji,
@@ -33,7 +33,7 @@ from src.report_language import (
 )
 from src.storage import DatabaseManager
 from src.services.run_diagnostics import build_run_diagnostic_summary
-from src.market_phase_summary import extract_market_phase_summary, render_market_phase_summary
+from src.market_phase_summary import extract_market_phase_summary
 from src.schemas.decision_action import build_action_fields
 from src.utils.sniper_points import find_sniper_points
 from src.utils.data_processing import (
@@ -277,16 +277,9 @@ class HistoryService:
         if market not in {"jp", "kr"}:
             return summary
 
-        try:
-            phase_context = build_market_phase_context(market=market)
-            return render_market_phase_summary(phase_context.to_dict())
-        except Exception as exc:
-            logger.debug(
-                "[HistoryService] rebuild JP/KR market phase summary failed: code=%s err=%s",
-                display_code,
-                exc,
-            )
+        if not isinstance(summary, dict):
             return summary
+        return {**summary, "market": market}
 
     def _record_to_list_item_dict(self, record) -> Dict[str, Any]:
         raw_result = parse_json_field(getattr(record, "raw_result", None))

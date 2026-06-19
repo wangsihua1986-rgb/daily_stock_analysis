@@ -1481,6 +1481,21 @@ class AnalysisApiContractTestCase(unittest.TestCase):
         if _build_analysis_report is None:
             self.skipTest("analysis endpoint helpers unavailable in this environment")
 
+        persisted_phase_summary = {
+            **_market_phase_summary(),
+            "phase": "postmarket",
+            "market_local_time": "2025-01-02T16:10:00+09:00",
+            "session_date": "2025-01-02",
+            "effective_daily_bar_date": "2025-01-02",
+            "is_market_open_now": False,
+            "is_partial_bar": False,
+            "minutes_to_open": 900,
+            "minutes_to_close": None,
+            "trigger_source": "scheduled_job",
+            "analysis_intent": "postmarket",
+            "warnings": ["legacy_snapshot"],
+        }
+
         with patch("api.v1.endpoints.analysis.resolve_index_stock_code", return_value="005930.KS"):
             report = _build_analysis_report(
                 report_data={
@@ -1492,13 +1507,25 @@ class AnalysisApiContractTestCase(unittest.TestCase):
                 query_id="q-kr-phase",
                 stock_code="005930",
                 stock_name="三星电子",
-                context_snapshot={"market_phase_summary": _market_phase_summary()},
+                context_snapshot={"market_phase_summary": persisted_phase_summary},
                 fallback_fundamental_payload=None,
             )
 
         self.assertEqual(report.meta.stock_code, "005930.KS")
         self.assertIsNotNone(report.meta.market_phase_summary)
         self.assertEqual(report.meta.market_phase_summary.market, "kr")
+        self.assertEqual(report.meta.market_phase_summary.phase, "postmarket")
+        self.assertEqual(
+            report.meta.market_phase_summary.market_local_time,
+            "2025-01-02T16:10:00+09:00",
+        )
+        self.assertEqual(report.meta.market_phase_summary.session_date, "2025-01-02")
+        self.assertEqual(
+            report.meta.market_phase_summary.effective_daily_bar_date,
+            "2025-01-02",
+        )
+        self.assertEqual(report.meta.market_phase_summary.trigger_source, "scheduled_job")
+        self.assertEqual(report.meta.market_phase_summary.analysis_intent, "postmarket")
 
     def test_build_analysis_report_merges_partial_top_level_context_with_fallback(self) -> None:
         if _build_analysis_report is None:
