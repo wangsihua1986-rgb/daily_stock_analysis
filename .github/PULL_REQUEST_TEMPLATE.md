@@ -24,6 +24,10 @@ For English contributors: please fill in English. All fields marked (EN) accept 
 
 > 注意：请按实际 `git diff` 全量列出文件范围（建议注明文件总数），避免遗漏文档/后端/API/前端文件导致描述不一致。
 
+- 文件总数 / 变更行数：
+- 文件清单（按实际 diff 全量，逐项列出）：
+- 文档更新文件（`docs/*`）：
+
 ## Issue Link
 
 必须填写以下之一 / Fill in one of:
@@ -52,6 +56,7 @@ python -m pytest -m "not network"
 > 如截图无法获取，请在“原因”中明确写明替代证据（如 Playwright/e2e 产物路径、审查链接）及其可追溯命令，不得留空。
 
 - 截图链接 / Screenshot links:
+- 前后对比 / Before & After（如有）:
 - 不适用原因 / Reason if not applicable:
 
 ## Compatibility And Risk
