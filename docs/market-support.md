@@ -79,7 +79,10 @@ Market Light / 告警：
 
 - 兼容性核验：本次仅收敛 Market Light 告警到 `cn/hk/us`，不更改 provider/model/base_url 持久化链路；`.env.example`、`src/config.py`、`src/core/config_registry.py`、`src/services/system_config_service.py` 对已有 provider/provider-key 语义不做清空或迁移改写；可通过 `tests/test_system_config_service.py` 与 `tests/test_config_env_compat.py` 回归验证。
 - 运行时回退：若需要恢复旧行为，移除 `jp/kr` 对 Market Light 的误用入口（或回退该 PR）即可，保留既有配置路径不变。
-- Web UI 变更可追溯证据：`apps/dsa-web/src/components/alerts/__tests__/AlertRuleForm.test.tsx` 覆盖 `market` 场景下仅展示 `cn/hk/us`；如需页面级截图，可用 Playwright 按 PR 描述记录审阅截图，不以仓库文件形式提交。
+- Web UI 变更可追溯证据：`apps/dsa-web/src/components/alerts/__tests__/AlertRuleForm.test.tsx` 覆盖 `market` 场景下仅展示 `cn/hk/us`；如需页面级截图，可先执行
+  `cd apps/dsa-web && npx playwright test --project=chromium --grep "market light"` 生成截图/trace；或在 PR 描述中用替代证据引用以下后端回归命令：
+  - `python -m pytest tests/test_market_light_service.py tests/test_market_light_alerts.py -q`
+  - `python -m pytest tests/test_portfolio_service.py -q`
 
 ## 台湾个股 suffix-only MVP（Issue #1772，Refs #1772）
 
