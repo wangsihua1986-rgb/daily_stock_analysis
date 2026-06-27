@@ -1510,7 +1510,12 @@ Output the report content directly, no extra commentary.
 - **Concept Leaders**: {top_concept_text or "N/A"}
 - **Concept Laggards**: {bottom_concept_text or "N/A"}
 """
-            market_names = {"us": "US Market Recap", "hk": "HK Market Recap"}
+            market_names = {
+                "us": "US Market Recap",
+                "hk": "HK Market Recap",
+                "jp": "Japan Market Recap",
+                "kr": "Korea Market Recap",
+            }
             market_name = market_names.get(self.region, "A-share Market Recap")
             report = f"""## {overview.date} {market_name}
 
@@ -1531,7 +1536,7 @@ Market conditions can change quickly. The data above is for reference only and d
 """
             return report
 
-        market_labels = {"cn": "A股", "us": "美股", "hk": "港股"}
+        market_labels = {"cn": "A股", "us": "美股", "hk": "港股", "jp": "日股", "kr": "韩股"}
         market_label = market_labels.get(self.region, "A股")
         dashboard_block = self._build_stats_block(overview)
         indices_block = self._build_indices_block(overview)

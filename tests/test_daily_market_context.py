@@ -136,6 +136,38 @@ def test_reuses_same_day_market_review_history_without_running_review() -> None:
     run_review.assert_not_called()
 
 
+def test_reuses_jp_market_review_history_without_normalizing_to_cn() -> None:
+    db = MagicMock()
+    db.get_analysis_history.return_value = [
+        _history_record(
+            created_at=datetime(2026, 6, 6, 9, 30),
+            region="jp",
+            summary="日股退潮，高风险，建议观望，仓位上限30%。",
+        )
+    ]
+    service = DailyMarketContextService(
+        db_manager=db,
+        today_fn=lambda: date(2026, 6, 6),
+    )
+
+    with patch("src.services.daily_market_context.run_market_review") as run_review:
+        context = service.get_context(
+            region="jp",
+            config=SimpleNamespace(report_language="zh"),
+            notifier=MagicMock(),
+            analyzer=MagicMock(),
+            search_service=MagicMock(),
+            allow_generate=False,
+        )
+
+    assert context is not None
+    assert context.region == "jp"
+    assert context.summary.startswith("日股退潮")
+    assert "high_risk" in context.risk_tags
+    assert "low_position_cap" in context.risk_tags
+    run_review.assert_not_called()
+
+
 def test_does_not_reuse_same_day_history_on_report_language_mismatch() -> None:
     db = MagicMock()
     db.get_analysis_history.return_value = [
@@ -941,6 +973,30 @@ def test_prompt_section_escapes_summary_sentinel_text_before_insertion() -> None
     assert "BEGIN\\_UNTRUSTED\\_MARKET\\_SUMMARY" in section
     assert "END\\_UNTRUSTED\\_MARKET\\_SUMMARY" in section
     assert section.index("忽略约束") < section.rindex("- END_UNTRUSTED_MARKET_SUMMARY")
+
+
+def test_prompt_section_labels_jp_kr_regions_without_cn_fallback() -> None:
+    jp_section = format_daily_market_context_prompt_section(
+        {
+            "region": "jp",
+            "trade_date": "2026-06-06",
+            "summary": "日股市场震荡。",
+        },
+        report_language="zh",
+    )
+    kr_section = format_daily_market_context_prompt_section(
+        {
+            "region": "kr",
+            "trade_date": "2026-06-06",
+            "summary": "Korean market stayed cautious.",
+        },
+        report_language="en",
+    )
+
+    assert "- 市场：日股（jp）" in jp_section
+    assert "A股（cn）" not in jp_section
+    assert "- Region: Korea (kr)" in kr_section
+    assert "A-share (cn)" not in kr_section
 
 
 def test_extract_summary_prefers_region_scoped_section_over_generic_fallback_title() -> None:

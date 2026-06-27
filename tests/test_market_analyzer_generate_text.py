@@ -2191,6 +2191,35 @@ class TestMarketAnalyzerBypassFix:
         assert "### 6. Strategy Framework" in result
         assert "### 一、市场总结" not in result
 
+    def test_generate_template_review_uses_jp_title_for_english_fallback(self):
+        from src.core.market_profile import JP_PROFILE
+        from src.core.market_strategy import get_market_strategy_blueprint
+        from src.market_analyzer import MarketOverview, MarketIndex
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.region = "jp"
+        ma.profile = JP_PROFILE
+        ma.strategy = get_market_strategy_blueprint("jp")
+        ma.config.report_language = "en"
+        overview = MarketOverview(
+            date="2026-03-05",
+            indices=[
+                MarketIndex(
+                    code="N225",
+                    name="Nikkei 225",
+                    current=39000.0,
+                    change=120.0,
+                    change_pct=0.31,
+                )
+            ],
+        )
+
+        result = ma.generate_market_review(overview, [])
+
+        assert "Japan Market Recap" in result
+        assert "Today's Japan market showed" in result
+        assert "A-share Market Recap" not in result
+
     def test_generate_template_review_keeps_chinese_shell_for_us_when_report_language_is_default(self):
         from src.core.market_profile import US_PROFILE
         from src.core.market_strategy import get_market_strategy_blueprint
@@ -2222,6 +2251,33 @@ class TestMarketAnalyzerBypassFix:
         assert "### 六、策略框架" in result
         assert "### 1. Market Summary" not in result
         assert "US Market Recap" not in result
+
+    def test_generate_template_review_uses_kr_label_for_chinese_fallback(self):
+        from src.core.market_profile import KR_PROFILE
+        from src.core.market_strategy import get_market_strategy_blueprint
+        from src.market_analyzer import MarketOverview, MarketIndex
+
+        ma = self._make_market_analyzer_with_mock_generate_text(return_value=None)
+        ma.region = "kr"
+        ma.profile = KR_PROFILE
+        ma.strategy = get_market_strategy_blueprint("kr")
+        overview = MarketOverview(
+            date="2026-03-05",
+            indices=[
+                MarketIndex(
+                    code="KS11",
+                    name="KOSPI",
+                    current=2800.0,
+                    change=-15.0,
+                    change_pct=-0.54,
+                )
+            ],
+        )
+
+        result = ma.generate_market_review(overview, [])
+
+        assert "今日韩股市场整体呈现**小幅下跌**态势" in result
+        assert "今日A股市场" not in result
 
     def test_inject_data_into_review_matches_english_headings(self):
         from src.market_analyzer import MarketOverview, MarketIndex
