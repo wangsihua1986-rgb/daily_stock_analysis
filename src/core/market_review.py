@@ -11,6 +11,7 @@
 """
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, Optional
@@ -489,7 +490,19 @@ def _render_market_review_payload_body(payload: Dict[str, Any]) -> str:
     if isinstance(markets, dict) and markets:
         markdown_report = payload.get("markdown_report")
         if isinstance(markdown_report, str) and markdown_report.strip():
-            return markdown_report.strip()
+            original_markdown = markdown_report.strip()
+            rendered = original_markdown
+            for market in _MARKET_REVIEW_REGION_ORDER:
+                market_payload = markets.get(market)
+                if not isinstance(market_payload, dict):
+                    continue
+                rendered = _append_missing_sector_payload_block(
+                    rendered,
+                    market_payload,
+                    title_prefix=str(market_payload.get("title") or market.upper()).strip(),
+                    existing_markdown=original_markdown,
+                )
+            return rendered
         parts = []
         for market in _MARKET_REVIEW_REGION_ORDER:
             market_payload = markets.get(market)
@@ -503,7 +516,8 @@ def _render_single_market_review_payload(payload: Dict[str, Any]) -> str:
     sections = payload.get("sections")
     if not isinstance(sections, list) or not sections:
         markdown = payload.get("markdown_report")
-        return markdown if isinstance(markdown, str) else ""
+        rendered = markdown if isinstance(markdown, str) else ""
+        return _append_missing_sector_payload_block(rendered, payload)
 
     title = payload.get("title")
     normalized_title = _normalize_market_review_heading(title)
@@ -525,7 +539,117 @@ def _render_single_market_review_payload(payload: Dict[str, Any]) -> str:
         if should_render_section_title:
             lines.extend([f"### {section_title}", ""])
         lines.extend([markdown, ""])
+    return _append_missing_sector_payload_block("\n".join(lines).strip(), payload)
+
+
+def _append_missing_sector_payload_block(
+    markdown: str,
+    payload: Dict[str, Any],
+    *,
+    title_prefix: str = "",
+    existing_markdown: Optional[Any] = None,
+) -> str:
+    sector_block = _render_sector_payload_block(payload)
+    if not sector_block:
+        return markdown.strip()
+    markdown_to_check = markdown if existing_markdown is None else existing_markdown
+    if _markdown_has_sector_table(markdown_to_check, title_prefix=title_prefix):
+        return markdown.strip()
+
+    language = normalize_report_language(payload.get("language"))
+    title = "Sector Highlights" if language == "en" else "板块主线"
+    heading = f"{title_prefix} / {title}" if title_prefix else title
+    base = markdown.strip()
+    if not base:
+        return f"### {heading}\n\n{sector_block}".strip()
+    return f"{base}\n\n### {heading}\n\n{sector_block}".strip()
+
+
+def _markdown_has_sector_table(markdown: Any, *, title_prefix: str = "") -> bool:
+    text = str(markdown or "")
+    if title_prefix:
+        title = title_prefix.strip()
+        prefixed_markers = (
+            f"### {title} / 板块主线",
+            f"### {title} / Sector Highlights",
+        )
+        if any(marker in text for marker in prefixed_markers):
+            return True
+        segment = _extract_market_markdown_segment(text, title)
+        if segment is None:
+            return False
+        text = segment
+
+    return _markdown_contains_sector_markers(text)
+
+
+def _extract_market_markdown_segment(markdown: str, title: str) -> Optional[str]:
+    if not title:
+        return None
+    heading_pattern = re.compile(rf"(?m)^#{{1,2}}\s+{re.escape(title)}\s*$")
+    match = heading_pattern.search(markdown)
+    if not match:
+        return None
+    next_heading = re.search(r"(?m)^(?:#{1,2}\s+|---\s*$)", markdown[match.end():])
+    end = match.end() + next_heading.start() if next_heading else len(markdown)
+    return markdown[match.start():end]
+
+
+def _markdown_contains_sector_markers(text: str) -> bool:
+    markers = (
+        "#### 领涨板块",
+        "#### 领跌板块",
+        "#### Leading Sectors",
+        "#### Lagging Sectors",
+        "| 排名 | 板块 |",
+        "| Rank | Sector |",
+    )
+    return any(marker in text for marker in markers)
+
+
+def _render_sector_payload_block(payload: Dict[str, Any]) -> str:
+    sectors = payload.get("sectors")
+    if not isinstance(sectors, dict):
+        return ""
+    top = sectors.get("top") if isinstance(sectors.get("top"), list) else []
+    bottom = sectors.get("bottom") if isinstance(sectors.get("bottom"), list) else []
+    if not top and not bottom:
+        return ""
+
+    language = normalize_report_language(payload.get("language"))
+    lines = []
+    if top:
+        if language == "en":
+            lines.extend(["#### Leading Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
+        else:
+            lines.extend(["#### 领涨板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
+        for rank, sector in enumerate(top[:5], 1):
+            if not isinstance(sector, dict):
+                continue
+            name = str(sector.get("name") or "-").strip() or "-"
+            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(sector)} |")
+    if bottom:
+        if lines:
+            lines.append("")
+        if language == "en":
+            lines.extend(["#### Lagging Sectors", "| Rank | Sector | Change |", "|------|--------|--------|"])
+        else:
+            lines.extend(["#### 领跌板块 Top 5", "| 排名 | 板块 | 涨跌幅 |", "|------|------|--------|"])
+        for rank, sector in enumerate(bottom[:5], 1):
+            if not isinstance(sector, dict):
+                continue
+            name = str(sector.get("name") or "-").strip() or "-"
+            lines.append(f"| {rank} | {name} | {_format_sector_change_pct(sector)} |")
     return "\n".join(lines).strip()
+
+
+def _format_sector_change_pct(sector: Dict[str, Any]) -> str:
+    raw = sector.get("change_pct", sector.get("changePct"))
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return "--"
+    return f"{value:+.2f}%"
 
 
 def _normalize_market_review_heading(value: Any) -> str:

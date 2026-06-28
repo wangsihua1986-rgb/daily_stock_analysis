@@ -514,6 +514,57 @@ class MarketReviewLocalizationTestCase(unittest.TestCase):
         self.assertEqual(markdown.count("2026-06-03 大盘复盘"), 1)
         self.assertTrue(markdown.startswith("🎯 大盘复盘\n\n## 2026-06-03 大盘复盘"))
 
+    def test_render_market_review_payload_markdown_appends_structured_sector_fallback(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "title": "2026-06-03 大盘复盘",
+                "language": "zh",
+                "sections": [
+                    {
+                        "key": "overview",
+                        "title": "Overview",
+                        "markdown": "> 今日指数强弱分化。",
+                    }
+                ],
+                "sectors": {
+                    "top": [{"name": "AI算力", "change_pct": 3.25}],
+                    "bottom": [{"name": "煤炭", "change_pct": -1.12}],
+                },
+            },
+            wrapper_title="🎯 大盘复盘",
+        )
+
+        self.assertIn("### 板块主线", markdown)
+        self.assertIn("#### 领涨板块 Top 5", markdown)
+        self.assertIn("| 1 | AI算力 | +3.25% |", markdown)
+        self.assertIn("#### 领跌板块 Top 5", markdown)
+        self.assertIn("| 1 | 煤炭 | -1.12% |", markdown)
+
+    def test_render_market_review_payload_markdown_appends_each_market_sector_fallback(self) -> None:
+        markdown = market_review_module._render_market_review_payload_markdown(
+            {
+                "language": "zh",
+                "markdown_report": "## A 股大盘\n\n今日震荡。\n\n---\n\n## 港股大盘\n\n今日反弹。",
+                "markets": {
+                    "cn": {
+                        "title": "A 股大盘",
+                        "language": "zh",
+                        "sectors": {"top": [{"name": "AI算力", "change_pct": 3.25}]},
+                    },
+                    "hk": {
+                        "title": "港股大盘",
+                        "language": "zh",
+                        "sectors": {"top": [{"name": "科技", "change_pct": 2.18}]},
+                    },
+                },
+            }
+        )
+
+        self.assertIn("### A 股大盘 / 板块主线", markdown)
+        self.assertIn("| 1 | AI算力 | +3.25% |", markdown)
+        self.assertIn("### 港股大盘 / 板块主线", markdown)
+        self.assertIn("| 1 | 科技 | +2.18% |", markdown)
+
     def test_persist_market_review_history_saves_markdown_report(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             old_db_path = os.environ.get("DATABASE_PATH")
