@@ -256,23 +256,33 @@ def _fetch_spot_snapshot() -> List[Dict[str, Any]]:
     """拉取全 A 股实时快照并标准化字段。
 
     数据源：akshare 东方财富接口（盘前返回上一交易日收盘口径）。
+    复用 AkshareFetcher 的随机 UA + 限流机制，避免云服务器/海外 IP
+    高频直连东财接口时被识别为爬虫而断连（RemoteDisconnected）。
     返回：标准化字典列表；失败时返回空列表（调用方决定如何降级）。
     """
     try:
         import akshare as ak
+        from data_provider.akshare_fetcher import AkshareFetcher
     except ImportError:
         logger.error("[短线荐股] akshare 未安装，无法获取全市场快照")
         return []
 
+    anti_block = AkshareFetcher()
     df = None
-    for attempt in range(1, 3):
+    last_error: Optional[Exception] = None
+    for attempt in range(1, 4):
         try:
+            anti_block._set_random_user_agent()
+            anti_block._enforce_rate_limit()
             df = ak.stock_zh_a_spot_em()
             break
-        except Exception as exc:  # 网络类异常：重试一次后放弃
-            logger.warning("[短线荐股] 全市场快照获取失败 (attempt %d/2): %s", attempt, exc)
-            time.sleep(2)
+        except Exception as exc:  # 网络类异常：退避后重试
+            last_error = exc
+            logger.warning("[短线荐股] 全市场快照获取失败 (attempt %d/3): %s", attempt, exc)
+            time.sleep(min(3 * attempt, 10))
     if df is None or df.empty:
+        if last_error is not None:
+            logger.error("[短线荐股] 全市场快照最终失败: %s", last_error)
         return []
 
     # 东财中文列名 -> 标准键（部分列缺失时取 None）
