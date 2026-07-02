@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+- [新功能] 新增 `scripts/deploy_vps.sh` 一键部署脚本，在 Ubuntu VPS 上自动完成虚拟环境、前端构建、systemd 常驻服务（服务名 `dsa`）、Nginx 反向代理与 Let's Encrypt HTTPS 配置；支持与同服务器上其他项目共存，部署前强制校验 `.env` 已设 `ADMIN_AUTH_ENABLED=true`，详见 `docs/DEPLOY.md` 方案五。
 - [修复] Discord 长报告推送按 2000 字符上限分片逐段发送，遇到 429 限流会按 `retry_after`/`Retry-After` 有限重试，避免中途失败后只收到前半段报告。
 - [改进] #1777 台股三大法人 fetcher（`TwInstitutionalFetcher`）增加缓存防击穿：并发同 (市场, 日期) 调用合并为单次上游请求，保护 TWSE T86 ~3 req/5s 限流额度；不同 key 仍并行；新增并发单次抓取、不同 key 各抓一次、HTTP 错误 fail-open 回归测试。
 - [修复] 修复桌面端启动时 `.env` 中 `WEBUI_PORT` 与 Electron 自动选择端口不一致会导致窗口继续等待旧端口并连接超时的问题。

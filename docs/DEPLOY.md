@@ -10,6 +10,7 @@
 | **直接部署** | 简单直接、无额外依赖 | 环境依赖、迁移麻烦 | 临时测试 |
 | **Systemd 服务** | 系统级管理、开机自启 | 配置繁琐 | 长期稳定运行 |
 | **Supervisor** | 进程管理、自动重启 | 需要额外安装 | 多进程管理 |
+| **一键脚本**（Systemd + Nginx + HTTPS） | 一条命令自动配好域名、HTTPS、开机自启 | 需要 Ubuntu VPS + root 权限 | 已有域名、想省去手动配置步骤，或需与同服务器上其他项目共存 |
 
 **结论：推荐使用 Docker Compose，迁移最快最方便！**
 
@@ -508,6 +509,39 @@ A: Actions → 选择运行记录 → Artifacts → 下载 `analysis-reports-xxx
 
 **Q: 免费额度够用吗？**
 A: 每次运行约 2-5 分钟，一个月 22 个工作日 = 44-110 分钟，远低于 2000 分钟限制。
+
+---
+
+## 🖇️ 方案五：一键脚本部署（Systemd + Nginx + HTTPS）
+
+适合已有 Ubuntu VPS、想直接用域名 + HTTPS 访问，且不想装 Docker 的场景；也适合同一台服务器上还部署了其他项目（各项目用不同 systemd 服务名和不同域名/子域名即可共存，互不影响）。
+
+```bash
+# 在 VPS 上、已 clone 本仓库后，以 root 运行
+sudo bash scripts/deploy_vps.sh 你的域名或子域名
+```
+
+脚本会自动完成：装依赖（含 Node.js）→ 建虚拟环境装依赖 → 构建前端 → 配置 systemd 常驻服务（服务名固定为 `dsa`）→ 配置 Nginx 反向代理 → 申请 Let's Encrypt HTTPS 证书。
+
+首次运行会生成 `.env` 并提示你先填写 AI 模型 Key、自选股和 `ADMIN_AUTH_ENABLED=true`（脚本会强制校验此项已开启，避免公网部署时系统设置页无密码保护），填完后重跑一次同样的命令即可。
+
+常用运维命令：
+
+```bash
+# 看运行状态
+systemctl status dsa
+
+# 看实时日志
+journalctl -u dsa -f
+
+# 重启服务
+sudo systemctl restart dsa
+
+# 更新代码后重新部署（会重新构建前端并重启服务）
+cd /opt/daily_stock_analysis && git pull && sudo bash scripts/deploy_vps.sh 你的域名或子域名
+```
+
+> 本脚本只部署 Web/API 服务，不包含每日定时分析；如需服务器自动定时分析，可另行配置 `--schedule` 常驻，或使用[方案四 GitHub Actions](#️-方案四github-actions-部署免服务器)在云端免费执行。
 
 ---
 
