@@ -160,13 +160,12 @@ def passes_hard_filter(row: Dict[str, Any]) -> bool:
     if "ST" in name.upper() or "退" in name:
         return False
 
-    checks = (
+    # 核心字段（价格/涨跌幅/成交额）所有快照源都会提供，缺失即拒绝
+    required_checks = (
         ("price", HARD_FILTER_MIN_PRICE, HARD_FILTER_MAX_PRICE),
         ("change_pct", HARD_FILTER_MIN_CHANGE_PCT, HARD_FILTER_MAX_CHANGE_PCT),
-        ("turnover_rate", HARD_FILTER_MIN_TURNOVER, HARD_FILTER_MAX_TURNOVER),
-        ("float_mv", HARD_FILTER_MIN_FLOAT_MV, HARD_FILTER_MAX_FLOAT_MV),
     )
-    for key, low, high in checks:
+    for key, low, high in required_checks:
         value = row.get(key)
         if value is None or not (low <= float(value) <= high):
             return False
@@ -174,13 +173,24 @@ def passes_hard_filter(row: Dict[str, Any]) -> bool:
     amount = row.get("amount")
     if amount is None or float(amount) < HARD_FILTER_MIN_AMOUNT:
         return False
-    volume_ratio = row.get("volume_ratio")
-    if volume_ratio is None or float(volume_ratio) < HARD_FILTER_MIN_VOLUME_RATIO:
-        return False
-    # 60 日涨幅可能缺失（新股等），缺失时按不通过处理
-    change_60d = row.get("change_60d")
-    if change_60d is None or float(change_60d) > HARD_FILTER_MAX_60D_CHANGE:
-        return False
+
+    # 以下字段仅东财等富字段源提供；轻量兜底源（如新浪）缺失时不参与该项判断，
+    # 而不是直接拒绝——避免主数据源被限流时兜底源完全无法产出候选。
+    optional_checks = (
+        ("turnover_rate", HARD_FILTER_MIN_TURNOVER, HARD_FILTER_MAX_TURNOVER),
+        ("volume_ratio", HARD_FILTER_MIN_VOLUME_RATIO, None),
+        ("float_mv", HARD_FILTER_MIN_FLOAT_MV, HARD_FILTER_MAX_FLOAT_MV),
+        ("change_60d", None, HARD_FILTER_MAX_60D_CHANGE),
+    )
+    for key, low, high in optional_checks:
+        value = row.get(key)
+        if value is None:
+            continue
+        value = float(value)
+        if low is not None and value < low:
+            return False
+        if high is not None and value > high:
+            return False
     return True
 
 
@@ -252,13 +262,45 @@ def parse_llm_pick_response(text: str, valid_codes: List[str]) -> List[Dict[str,
 # 数据获取与筛选流水线（含网络 IO）
 # ---------------------------------------------------------------------------
 
+# 各数据源中文列名 -> 标准键。东财字段最全；新浪缺换手率/量比/流通市值/60日涨幅，
+# 这些字段在 passes_hard_filter 中按"缺失则跳过该项判断"处理，不会导致新浪兜底完全失效。
+_EM_SNAPSHOT_COLUMN_MAP = {
+    "代码": "code", "名称": "name", "最新价": "price", "涨跌幅": "change_pct",
+    "成交额": "amount", "换手率": "turnover_rate", "量比": "volume_ratio",
+    "流通市值": "float_mv", "60日涨跌幅": "change_60d",
+}
+_SINA_SNAPSHOT_COLUMN_MAP = {
+    "代码": "code", "名称": "name", "最新价": "price", "涨跌幅": "change_pct",
+    "成交额": "amount",
+}
+
+
+def _normalize_snapshot_df(df: Any, column_map: Dict[str, str]) -> List[Dict[str, Any]]:
+    """把快照 DataFrame 按列名映射转换为标准化字典列表（缺失列/脏值取 None）。"""
+    rows: List[Dict[str, Any]] = []
+    for _, record in df.iterrows():
+        row: Dict[str, Any] = {}
+        for cn_col, key in column_map.items():
+            value = record.get(cn_col)
+            try:
+                row[key] = None if value is None or str(value) in ("", "-", "nan") else (
+                    str(value) if key in ("code", "name") else float(value)
+                )
+            except (TypeError, ValueError):
+                row[key] = None
+        rows.append(row)
+    return rows
+
+
 def _fetch_spot_snapshot() -> List[Dict[str, Any]]:
     """拉取全 A 股实时快照并标准化字段。
 
-    数据源：akshare 东方财富接口（盘前返回上一交易日收盘口径）。
+    主数据源：akshare 东方财富接口（字段最全，盘前返回上一交易日收盘口径）。
     复用 AkshareFetcher 的随机 UA + 限流机制，避免云服务器/海外 IP
     高频直连东财接口时被识别为爬虫而断连（RemoteDisconnected）。
-    返回：标准化字典列表；失败时返回空列表（调用方决定如何降级）。
+    主源彻底失败时（如该 VPS 出口 IP 被限制），回退到新浪轻量快照接口
+    ——字段较少但通常不受同样的限制。
+    返回：标准化字典列表；两个源都失败时返回空列表（调用方决定如何降级）。
     """
     try:
         import akshare as ak
@@ -278,32 +320,28 @@ def _fetch_spot_snapshot() -> List[Dict[str, Any]]:
             break
         except Exception as exc:  # 网络类异常：退避后重试
             last_error = exc
-            logger.warning("[短线荐股] 全市场快照获取失败 (attempt %d/3): %s", attempt, exc)
+            logger.warning("[短线荐股] 全市场快照获取失败(东财, attempt %d/3): %s", attempt, exc)
             time.sleep(min(3 * attempt, 10))
-    if df is None or df.empty:
-        if last_error is not None:
-            logger.error("[短线荐股] 全市场快照最终失败: %s", last_error)
-        return []
 
-    # 东财中文列名 -> 标准键（部分列缺失时取 None）
-    column_map = {
-        "代码": "code", "名称": "name", "最新价": "price", "涨跌幅": "change_pct",
-        "成交额": "amount", "换手率": "turnover_rate", "量比": "volume_ratio",
-        "流通市值": "float_mv", "60日涨跌幅": "change_60d",
-    }
-    rows: List[Dict[str, Any]] = []
-    for _, record in df.iterrows():
-        row: Dict[str, Any] = {}
-        for cn_col, key in column_map.items():
-            value = record.get(cn_col)
-            try:
-                row[key] = None if value is None or str(value) in ("", "-", "nan") else (
-                    str(value) if key in ("code", "name") else float(value)
-                )
-            except (TypeError, ValueError):
-                row[key] = None
-        rows.append(row)
-    logger.info("[短线荐股] 全市场快照获取成功：%d 只", len(rows))
+    if df is not None and not df.empty:
+        rows = _normalize_snapshot_df(df, _EM_SNAPSHOT_COLUMN_MAP)
+        logger.info("[短线荐股] 全市场快照获取成功(东财)：%d 只", len(rows))
+        return rows
+
+    if last_error is not None:
+        logger.warning("[短线荐股] 东财快照最终失败，尝试新浪兜底: %s", last_error)
+    try:
+        anti_block._set_random_user_agent()
+        anti_block._enforce_rate_limit()
+        sina_df = ak.stock_zh_a_spot()
+    except Exception as exc:
+        logger.error("[短线荐股] 新浪兜底快照也失败: %s", exc)
+        return []
+    if sina_df is None or sina_df.empty:
+        logger.error("[短线荐股] 新浪兜底快照返回为空")
+        return []
+    rows = _normalize_snapshot_df(sina_df, _SINA_SNAPSHOT_COLUMN_MAP)
+    logger.info("[短线荐股] 全市场快照获取成功(新浪兜底，字段较少)：%d 只", len(rows))
     return rows
 
 

@@ -126,11 +126,17 @@ class TestHardFilter:
         {"turnover_rate": 20.0},      # 换手过热
         {"float_mv": 1e9},            # 微盘
         {"change_60d": 80.0},         # 已暴涨
-        {"price": None},              # 关键字段缺失
-        {"change_60d": None},         # 60日涨幅缺失
+        {"price": None},              # 核心字段缺失（价格所有源必有）
+        {"amount": None},             # 核心字段缺失（成交额所有源必有）
     ])
     def test_rejections(self, overrides):
         assert not passes_hard_filter(_valid_row(**overrides))
+
+    def test_missing_optional_fields_still_passes(self):
+        # 模拟新浪兜底快照：缺换手率/量比/流通市值/60日涨幅，
+        # 仅核心字段齐全时仍应通过（缺失的可选项不参与判断，不是"宁缺毋滥"）。
+        row = _valid_row(turnover_rate=None, volume_ratio=None, float_mv=None, change_60d=None)
+        assert passes_hard_filter(row)
 
 
 class TestTechnicalFilter:
