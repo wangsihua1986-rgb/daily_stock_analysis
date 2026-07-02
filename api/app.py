@@ -277,6 +277,10 @@ async def app_lifespan(app: FastAPI):
     app.state.system_config_service = SystemConfigService(
         runtime_scheduler=app.state.runtime_scheduler_service,
     )
+    # 短线荐股后台 worker：SWING_PICKS_ENABLED=true 时随服务启动（失败不影响主服务）
+    from src.services.swing_picks_worker import start_swing_picks_worker_if_enabled
+
+    app.state.swing_picks_worker = start_swing_picks_worker_if_enabled()
     _schedule_stock_index_background_refresh(app, "startup")
     try:
         yield
@@ -286,6 +290,10 @@ async def app_lifespan(app: FastAPI):
             refresh_task.cancel()
             with suppress(asyncio.CancelledError):
                 await refresh_task
+        swing_worker = getattr(app.state, "swing_picks_worker", None)
+        if swing_worker is not None:
+            swing_worker.stop()
+            app.state.swing_picks_worker = None
         if hasattr(app.state, "system_config_service"):
             delattr(app.state, "system_config_service")
         runtime_scheduler = getattr(app.state, "runtime_scheduler_service", None)

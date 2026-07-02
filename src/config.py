@@ -860,6 +860,17 @@ class Config:
     agent_event_monitor_interval_minutes: int = 5  # Polling interval for event monitor background checks
     agent_event_alert_rules_json: str = ""  # JSON array of serialized EventMonitor rules
 
+    # === 短线荐股（Swing Picks）配置 ===
+    # 每个交易日盘前自动从全 A 股筛选若干只 2-3 天短线候选，
+    # 盘中监控持仓价格，触及止盈/止损推送卖出提醒，到期日强制提醒卖出。
+    swing_picks_enabled: bool = False  # 功能总开关（随 Web/API 服务进程启动后台 worker）
+    swing_picks_count: int = 5  # 每天精选的股票数量
+    swing_picks_take_profit_pct: float = 5.0  # 止盈涨幅（%），相对买入参考价
+    swing_picks_stop_loss_pct: float = 3.0  # 止损跌幅（%），相对买入参考价
+    swing_picks_max_hold_days: int = 3  # 最长持有交易日数（含买入日，到期强制提醒卖出）
+    swing_picks_morning_time: str = "09:00"  # 每天生成荐股的时间（HH:MM，盘前）
+    swing_picks_monitor_interval_minutes: int = 5  # 盘中监控轮询间隔（分钟）
+
     # === 通知配置（可同时配置多个，全部推送）===
     
     # 企业微信 Webhook
@@ -1782,6 +1793,28 @@ class Config:
                 minimum=1,
             ),
             agent_event_alert_rules_json=os.getenv('AGENT_EVENT_ALERT_RULES_JSON', ''),
+            swing_picks_enabled=parse_env_bool(os.getenv('SWING_PICKS_ENABLED'), default=False),
+            swing_picks_count=parse_env_int(
+                os.getenv('SWING_PICKS_COUNT'), 5,
+                field_name='SWING_PICKS_COUNT', minimum=1,
+            ),
+            swing_picks_take_profit_pct=parse_env_float(
+                os.getenv('SWING_PICKS_TAKE_PROFIT_PCT'), 5.0,
+                field_name='SWING_PICKS_TAKE_PROFIT_PCT', minimum=0.5,
+            ),
+            swing_picks_stop_loss_pct=parse_env_float(
+                os.getenv('SWING_PICKS_STOP_LOSS_PCT'), 3.0,
+                field_name='SWING_PICKS_STOP_LOSS_PCT', minimum=0.5,
+            ),
+            swing_picks_max_hold_days=parse_env_int(
+                os.getenv('SWING_PICKS_MAX_HOLD_DAYS'), 3,
+                field_name='SWING_PICKS_MAX_HOLD_DAYS', minimum=1,
+            ),
+            swing_picks_morning_time=os.getenv('SWING_PICKS_MORNING_TIME', '09:00'),
+            swing_picks_monitor_interval_minutes=parse_env_int(
+                os.getenv('SWING_PICKS_MONITOR_INTERVAL_MINUTES'), 5,
+                field_name='SWING_PICKS_MONITOR_INTERVAL_MINUTES', minimum=1,
+            ),
             wechat_webhook_url=os.getenv('WECHAT_WEBHOOK_URL'),
             feishu_webhook_url=os.getenv('FEISHU_WEBHOOK_URL'),
             feishu_webhook_secret=os.getenv('FEISHU_WEBHOOK_SECRET'),

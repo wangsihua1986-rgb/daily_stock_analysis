@@ -36,6 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 - [改进] 台股三大法人 fetcher 韧性加固：(1) 接入熔断器（复用 `realtime_types.CircuitBreaker`，按市场 twse/tpex 分流，连续失败 3 次→冷却 ~5min→半开探测），TWSE/TPEx 端点异常时快速跳过网络往返并 fail-open，避免端点故障时每档个股都付 timeout+throttle；(2) TPEx OpenAPI 仅服务最新交易日，调用方传入与服务日期不符的明确日期时改为 fail-open（返回无数据），避免静默返回错日资料。
 
 - [修复] 台股（tw）市场阶段（`market_phase`）新增收盘集合竞价识别：`_CLOSING_AUCTION_WINDOW_MINUTES` 缺 `tw` 键时 `.get(market, 0)` 得零宽窗口，TWSE/TPEx 13:25–13:30 的 5 分钟收盘竞价此前永远无法判定为 `closing_auction`（收盘前一刻仍 `intraday`、13:30 直接 `postmarket`）；补 `"tw": 5` 修正，附阶段边界回归测试。仅 tw 加项，cn/hk/us 与 jp/kr 行为不变。
+- [新功能] 新增内置策略 `strategies/a_share_composite.yaml`（A股复合策略）：针对A股结构性分化行情的四层框架——市场环境定评分上限与仓位水位、主线板块与相对强度定方向、个股按"趋势主线/题材情绪/红利防守"哑铃分派打法、A股特色风控（一票否决、短期反转降级、T+1 提示）收口；不改变默认激活与路由行为，需用户显式选用。
+- [新功能] 新增短线荐股（Swing Picks，仅 A 股，默认关闭）：`SWING_PICKS_ENABLED=true` 后每个交易日盘前（默认 09:00）从全 A 股经硬规则初筛+均线技术筛+LLM 精选生成 N 只（默认 5）2-3 天短线候选并推送；开盘后以开盘价回填买入参考价，盘中按间隔监控，触及止盈（默认 +5%）/止损（默认 -3%）立即推送卖出提醒，最后持有日（默认第 3 个交易日）14:40 未达标推送强制卖出提醒；仅荐股与提醒不自动下单，状态落盘 `data/swing_picks/positions.json`，附手动触发脚本 `scripts/run_swing_picks.py` 与纯逻辑单元测试，详见 `docs/swing-picks.md`。
 
 ## [3.24.1] - 2026-06-28
 
