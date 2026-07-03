@@ -23,6 +23,8 @@ from src.services.swing_picks_service import (
     PICK_STATUS_OPEN,
     PICK_STATUS_PENDING,
     SwingPick,
+    _normalize_snapshot_df,
+    _SINA_SNAPSHOT_COLUMN_MAP,
     compute_deadline_date,
     compute_stop_price,
     compute_target_price,
@@ -251,6 +253,27 @@ class TestMorningTrigger:
     ])
     def test_trading_session(self, t, expected):
         assert is_in_trading_session(t) is expected
+
+
+class TestSnapshotNormalization:
+    """快照 DataFrame -> 标准化字典列表，重点覆盖代码前缀归一化。"""
+
+    def test_sina_code_prefix_stripped(self):
+        # 新浪接口"代码"列实测带 sh/sz 交易所前缀，归一化前会导致板块前缀判断全部失败
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame([
+            {"代码": "sh600000", "名称": "浦发银行", "最新价": 12.5, "涨跌幅": 3.2, "成交额": 5e8},
+            {"代码": "sz000001", "名称": "平安银行", "最新价": 10.0, "涨跌幅": 1.5, "成交额": 4e8},
+        ])
+        rows = _normalize_snapshot_df(df, _SINA_SNAPSHOT_COLUMN_MAP)
+        assert [r["code"] for r in rows] == ["600000", "000001"]
+        assert rows[0]["price"] == 12.5 and rows[0]["change_pct"] == 3.2
+
+    def test_already_bare_code_unaffected(self):
+        pd = pytest.importorskip("pandas")
+        df = pd.DataFrame([{"代码": "600000", "名称": "浦发银行", "最新价": 12.5, "涨跌幅": 3.2, "成交额": 5e8}])
+        rows = _normalize_snapshot_df(df, _SINA_SNAPSHOT_COLUMN_MAP)
+        assert rows[0]["code"] == "600000"
 
 
 class TestStatePersistence:

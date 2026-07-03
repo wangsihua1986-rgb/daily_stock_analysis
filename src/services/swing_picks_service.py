@@ -276,16 +276,28 @@ _SINA_SNAPSHOT_COLUMN_MAP = {
 
 
 def _normalize_snapshot_df(df: Any, column_map: Dict[str, str]) -> List[Dict[str, Any]]:
-    """把快照 DataFrame 按列名映射转换为标准化字典列表（缺失列/脏值取 None）。"""
+    """把快照 DataFrame 按列名映射转换为标准化字典列表（缺失列/脏值取 None）。
+
+    代码字段统一走 normalize_stock_code 归一化：新浪源返回的"代码"可能带
+    sh/sz 交易所前缀（如 sh600000），不归一化会导致 ALLOWED_CODE_PREFIXES
+    判断全部失败；东财源本身是纯 6 位数字，归一化是幂等操作、不受影响。
+    """
+    from data_provider.base import normalize_stock_code
+
     rows: List[Dict[str, Any]] = []
     for _, record in df.iterrows():
         row: Dict[str, Any] = {}
         for cn_col, key in column_map.items():
             value = record.get(cn_col)
             try:
-                row[key] = None if value is None or str(value) in ("", "-", "nan") else (
-                    str(value) if key in ("code", "name") else float(value)
-                )
+                if value is None or str(value) in ("", "-", "nan"):
+                    row[key] = None
+                elif key == "code":
+                    row[key] = normalize_stock_code(str(value))
+                elif key == "name":
+                    row[key] = str(value)
+                else:
+                    row[key] = float(value)
             except (TypeError, ValueError):
                 row[key] = None
         rows.append(row)
