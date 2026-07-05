@@ -3,8 +3,10 @@
 短线荐股后台监控 Worker
 
 职责（单个后台线程，随 Web/API 服务进程运行，由 SWING_PICKS_ENABLED 开关控制）：
-1. 交易日到达配置的盘前时间（默认 09:00）且当天未荐股时，触发每日荐股
-2. 开盘后为当日新荐股回填买入参考价（以开盘价为准），并计算止盈/止损价
+1. 交易日到达配置的荐股时间（默认 10:00，盘中口径；配置早于开盘则为盘前口径）
+   且当天未荐股时，触发每日荐股
+2. 为盘前口径产生的待入场记录回填买入参考价（开盘后以开盘价为准）并计算
+   止盈/止损价；盘中口径的荐股在生成时已定价，无需回填
 3. 交易时段内按配置间隔轮询持仓价格：
    - 触及止盈价 -> 推送"止盈卖出提醒"
    - 触及止损价 -> 推送"止损卖出提醒"
@@ -27,10 +29,10 @@ from src.services.swing_picks_service import (
     PICK_STATUS_PENDING,
     PICK_STATUS_STOP,
     PICK_STATUS_TARGET,
+    TRADING_SESSIONS_CN,
     SwingPick,
     _send_notification,
-    compute_stop_price,
-    compute_target_price,
+    apply_entry_pricing,
     generate_daily_picks,
     load_state,
     picks_from_state,
@@ -40,9 +42,8 @@ from src.services.swing_picks_service import (
 
 logger = logging.getLogger(__name__)
 
-# A 股交易时段（连续竞价）
-MORNING_SESSION = (dt_time(9, 30), dt_time(11, 30))
-AFTERNOON_SESSION = (dt_time(13, 0), dt_time(15, 0))
+# A 股交易时段（连续竞价）——统一取自 service 的单一定义，避免 9:30/15:00 多处硬编码
+MORNING_SESSION, AFTERNOON_SESSION = TRADING_SESSIONS_CN
 # 最后持有日的强制卖出提醒时间（留出收盘前的操作时间）
 FORCE_SELL_REMINDER_TIME = dt_time(14, 40)
 # worker 线程基础轮询节拍（秒）；实际行情轮询频率由配置的分钟间隔控制
@@ -183,14 +184,16 @@ class SwingPicksWorker:
             stats["picked"] = self._maybe_run_morning_pick(config, now_time, today)
             if is_in_trading_session(now_time):
                 stats["entries_filled"] = self._fill_pending_entries(config, today)
-                if self._should_poll_quotes(market_now, config):
+                # 刚荐完股的这一轮跳过监控：监控用的行情缓存可能比荐股定价的
+                # 快照旧（最长约 20 分钟），立即监控可能对新持仓误发卖出提醒
+                if stats["picked"] == 0 and self._should_poll_quotes(market_now, config):
                     stats["sell_alerts"] = self._monitor_open_positions(today, now_time)
         except Exception as exc:
             logger.error("[短线荐股] worker 单轮执行异常: %s", exc, exc_info=True)
         return stats
 
     def _maybe_run_morning_pick(self, config: Any, now_time: dt_time, today: date) -> int:
-        """到达盘前时间且当天未荐股时触发荐股，返回新增数量。"""
+        """到达配置的荐股时间且当天未荐股时触发荐股，返回新增数量。"""
         state = load_state()
         morning_time = parse_morning_time(getattr(config, "swing_picks_morning_time", "09:00"))
         if not should_run_morning_pick(now_time, morning_time, state.get("last_pick_date", ""), today):
@@ -219,14 +222,11 @@ class SwingPicksWorker:
                 price = getattr(quote, "open_price", None) or getattr(quote, "price", None)
                 if not price or float(price) <= 0:
                     continue
-                entry = float(price)
-                pick.entry_price = round(entry, 2)
-                pick.target_price = compute_target_price(entry, float(config.swing_picks_take_profit_pct))
-                pick.stop_price = compute_stop_price(entry, float(config.swing_picks_stop_loss_pct))
-                pick.status = PICK_STATUS_OPEN
+                # 定价逻辑与盘中即时定价共用同一函数，保证两种路径规则一致
+                apply_entry_pricing(pick, float(price), config)
                 filled += 1
                 logger.info("[短线荐股] %s 买入参考价 %.2f（止盈 %.2f/止损 %.2f）",
-                            pick.code, entry, pick.target_price, pick.stop_price)
+                            pick.code, pick.entry_price, pick.target_price, pick.stop_price)
             except Exception as exc:
                 logger.warning("[短线荐股] %s 回填买入价失败，下一轮重试: %s", pick.code, exc)
         if filled:

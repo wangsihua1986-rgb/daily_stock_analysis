@@ -6,6 +6,10 @@
 - 止盈/止损价计算与非法输入
 - 最长持有截止交易日计算（跳过周末/节假日）
 - 硬规则初筛（ST/板块前缀/字段缺失/区间边界）
+- 盘中模式硬筛门槛折算（成交额/换手率按已交易时段折算）
+- 盘中当日走势健康筛选（阳线/冲高回落/大幅低开）
+- 收盘价序列构造（剔除当天半根K线、盘中追加现价）
+- 盘中荐股即时定价（现价定买入参考价并直接进入监控）
 - 技术面筛选（均线多头、短期超涨）
 - LLM 回复解析容错（含幻觉代码过滤）
 - 持仓卖出事件状态机（止盈/止损/到期/优先级）
@@ -20,20 +24,28 @@ from datetime import date, time as dt_time
 import pytest
 
 from src.services.swing_picks_service import (
+    MODE_INTRADAY,
+    MODE_POSTMARKET,
+    MODE_PREMARKET,
     PICK_STATUS_OPEN,
     PICK_STATUS_PENDING,
     SwingPick,
     _normalize_snapshot_df,
     _SINA_SNAPSHOT_COLUMN_MAP,
+    apply_entry_pricing,
+    build_close_series,
     compute_deadline_date,
     compute_stop_price,
     compute_target_price,
+    intraday_elapsed_minutes,
     load_state,
     parse_llm_pick_response,
     passes_hard_filter,
+    passes_intraday_health,
     passes_technical_filter,
     picks_from_state,
     picks_to_state,
+    resolve_pick_mode,
     save_state,
 )
 from src.services.swing_picks_worker import (
@@ -139,6 +151,161 @@ class TestHardFilter:
         # 仅核心字段齐全时仍应通过（缺失的可选项不参与判断，不是"宁缺毋滥"）。
         row = _valid_row(turnover_rate=None, volume_ratio=None, float_mv=None, change_60d=None)
         assert passes_hard_filter(row)
+
+
+class TestHardFilterIntraday:
+    """盘中模式硬筛：成交额/换手率门槛按已交易时长动态折算，量比不折算。"""
+
+    T_1000 = dt_time(10, 0)   # 开盘 30 分钟，量额折算系数 0.25（下限兜底）
+    T_1400 = dt_time(14, 0)   # 已交易 180 分钟，量额折算系数 0.75
+
+    def test_partial_amount_passes_intraday_only(self):
+        # 盘中累计成交 6000 万：按全天标准（2亿）不达标，按 10:00 折算门槛（5000万）达标
+        row = _valid_row(amount=6e7, turnover_rate=2.0)
+        assert not passes_hard_filter(row)
+        assert passes_hard_filter(row, intraday_time=self.T_1000)
+
+    def test_amount_scale_grows_with_elapsed_time(self):
+        # 同样 6000 万成交，14:00 触发时门槛已升到 1.5 亿（2亿×0.75），不再达标
+        row = _valid_row(amount=6e7, turnover_rate=2.0)
+        assert not passes_hard_filter(row, intraday_time=self.T_1400)
+        # 1.6 亿成交在 14:00 达标
+        assert passes_hard_filter(_valid_row(amount=1.6e8, turnover_rate=2.0), intraday_time=self.T_1400)
+
+    def test_turnover_band_scaled_both_ends(self):
+        # 10:00 换手 5%（暗示全天约 20%）超折算上限 3.75%，判定过热
+        assert not passes_hard_filter(_valid_row(amount=6e7, turnover_rate=5.0), intraday_time=self.T_1000)
+        # 10:00 换手 0.4%（暗示全天约 1.6%）低于折算下限 0.5%，热度不足
+        assert not passes_hard_filter(_valid_row(amount=6e7, turnover_rate=0.4), intraday_time=self.T_1000)
+
+    def test_volume_ratio_not_scaled(self):
+        # 量比天生是盘中口径（当前每分钟量 vs 5日均），不折算：0.8 仍被拒
+        row = _valid_row(amount=6e7, turnover_rate=2.0, volume_ratio=0.8)
+        assert not passes_hard_filter(row, intraday_time=self.T_1000)
+
+    def test_change_min_relaxed_in_opening_minutes(self):
+        # 开盘 5 分钟（09:35）涨幅下限放宽到约 0.17%：涨 0.3% 可通过
+        row = _valid_row(amount=6e7, turnover_rate=2.0, change_pct=0.3)
+        assert passes_hard_filter(row, intraday_time=dt_time(9, 35))
+        # 10:00 起恢复全额 1% 下限：涨 0.3% 被拒
+        assert not passes_hard_filter(row, intraday_time=self.T_1000)
+
+
+class TestIntradayElapsed:
+    """已交易分钟数计算（用于门槛动态折算）。"""
+
+    @pytest.mark.parametrize("t,expected", [
+        (dt_time(9, 0), 0),      # 开盘前
+        (dt_time(10, 0), 30),    # 上午开盘半小时
+        (dt_time(11, 30), 120),  # 上午收盘
+        (dt_time(12, 0), 120),   # 午休（保持上午累计）
+        (dt_time(14, 0), 180),   # 下午 1 小时
+        (dt_time(15, 30), 240),  # 收盘后（全天）
+    ])
+    def test_elapsed_minutes(self, t, expected):
+        assert intraday_elapsed_minutes(t) == expected
+
+
+class TestResolvePickMode:
+    """荐股口径解析：市场阶段优先，日历不可用时按时钟兜底。"""
+
+    NOON = dt_time(10, 0)
+
+    @pytest.mark.parametrize("phase,expected", [
+        ("premarket", MODE_PREMARKET),
+        ("intraday", MODE_INTRADAY),
+        ("lunch_break", MODE_INTRADAY),
+        ("closing_auction", MODE_INTRADAY),
+        ("postmarket", MODE_POSTMARKET),
+    ])
+    def test_phase_mapping(self, phase, expected):
+        assert resolve_pick_mode(phase, self.NOON) == expected
+
+    @pytest.mark.parametrize("t,expected", [
+        (dt_time(9, 0), MODE_PREMARKET),    # 日历不可用 + 开盘前
+        (dt_time(10, 0), MODE_INTRADAY),    # 日历不可用 + 盘中
+        (dt_time(15, 30), MODE_POSTMARKET), # 日历不可用 + 收盘后
+    ])
+    def test_unknown_phase_falls_back_to_clock(self, t, expected):
+        assert resolve_pick_mode("unknown", t) == expected
+
+
+def _intraday_row(**overrides):
+    """构造一条当日走势健康的合成快照记录（现价高于开盘、贴近当日高点、未低开）。"""
+    row = {"price": 10.5, "open": 10.2, "high": 10.6, "pre_close": 10.0}
+    row.update(overrides)
+    return row
+
+
+class TestIntradayHealth:
+    """盘中当日分时走势健康筛选（核心安全闸，字段缺失即拒绝）。"""
+
+    def test_healthy_row_passes(self):
+        assert passes_intraday_health(_intraday_row())
+
+    def test_below_open_fails(self):
+        # 现价跌破今开（当日阴线），开盘后在走弱
+        assert not passes_intraday_health(_intraday_row(price=10.1))
+
+    def test_deep_pullback_from_high_fails(self):
+        # 冲高 11.0 回落到 10.5，回撤 4.5% > 3% 上限
+        assert not passes_intraday_health(_intraday_row(high=11.0))
+
+    def test_gap_down_open_fails(self):
+        # 今开 9.7 低于昨收 10.0 的 98%（大幅低开硬拉形态）
+        assert not passes_intraday_health(_intraday_row(open=9.7, price=9.9, high=9.95))
+
+    @pytest.mark.parametrize("missing", ["price", "open", "high", "pre_close"])
+    def test_missing_any_field_rejected(self, missing):
+        # 安全闸宁可错杀：任一字段缺失（停牌/脏数据）直接拒绝，不允许绕过健康检查
+        assert not passes_intraday_health(_intraday_row(**{missing: None}))
+
+
+class TestBuildCloseSeries:
+    """收盘价序列构造：剔除当天半根K线、盘中追加现价。"""
+
+    DATES = ["2026-07-01", "2026-07-02", "2026-07-03"]
+    CLOSES = [10.0, 10.2, 10.1]
+
+    def test_drops_today_partial_bar(self):
+        # 日线最后一行是今天的实时半根K线 -> 剔除
+        assert build_close_series(self.DATES, self.CLOSES, "2026-07-03") == [10.0, 10.2]
+
+    def test_appends_current_price_intraday(self):
+        series = build_close_series(self.DATES, self.CLOSES, "2026-07-03", current_price=10.5)
+        assert series == [10.0, 10.2, 10.5]
+
+    def test_datetime_dates_supported(self):
+        # 部分数据源 date 列是 datetime 而非字符串，str() 前 10 位可比较
+        from datetime import datetime as _dt
+        dates = [_dt(2026, 7, 2), _dt(2026, 7, 3)]
+        assert build_close_series(dates, [10.2, 10.1], "2026-07-03") == [10.2]
+
+    def test_none_closes_skipped(self):
+        assert build_close_series(self.DATES, [10.0, None, 10.1], "2026-07-04") == [10.0, 10.1]
+
+
+class _StubConfig:
+    """定价测试用的最小配置桩。"""
+    swing_picks_take_profit_pct = 5.0
+    swing_picks_stop_loss_pct = 3.0
+
+
+class TestEntryPricing:
+    """共享定价函数（盘中即时定价与 worker 开盘回填共用同一实现）。"""
+
+    def test_entry_priced_and_opened(self):
+        pick = SwingPick(code="600000", name="测试", pick_date="2026-07-06", ref_price=10.0)
+        apply_entry_pricing(pick, 10.0, _StubConfig())
+        assert pick.status == PICK_STATUS_OPEN
+        assert pick.entry_price == 10.0
+        assert pick.target_price == 10.5 and pick.stop_price == 9.7
+
+    def test_invalid_price_raises(self):
+        # 非正价格属调用方违约（硬筛保证现价 3-100 元），直接抛 ValueError 而非静默
+        pick = SwingPick(code="600000", name="测试", pick_date="2026-07-06", ref_price=0.0)
+        with pytest.raises(ValueError):
+            apply_entry_pricing(pick, 0.0, _StubConfig())
 
 
 class TestTechnicalFilter:

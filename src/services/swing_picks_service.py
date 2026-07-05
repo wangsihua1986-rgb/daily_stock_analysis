@@ -3,11 +3,25 @@
 短线荐股服务（Swing Picks，仅 A 股）
 
 职责：
-1. 每个交易日盘前从全 A 股快照做硬规则初筛（剔除 ST/低流动性/超涨等）
+1. 每个交易日从全 A 股快照做硬规则初筛（剔除 ST/低流动性/超涨等）
 2. 对初筛候选拉取日线做技术面筛选（均线多头排列、短期未超涨）
 3. 调用 LLM 按"A股复合策略"思路精选最终 N 只，给出推荐理由
 4. 计算每只的买入参考价、止盈价、止损价、最长持有截止日
 5. 持仓状态落盘到 data/swing_picks/positions.json，并推送荐股通知
+
+双模式（按触发时刻的市场阶段自动切换，无需额外开关）：
+- 盘前模式（开盘前触发）：快照为上一交易日收盘口径，"涨跌幅"是昨日涨幅；
+  荐股后等开盘由 worker 回填开盘价作为买入参考价。
+- 盘中模式（连续竞价/午休/尾盘竞价时段触发，如默认 10:00）：快照为当日实时口径，
+  "涨跌幅"自动变为今日实时涨幅（即"当天正在走强"）；成交额/换手率门槛按
+  已交易时长动态折算（10:00 约 25%，随时间推移趋近 100%），涨幅下限在开盘
+  初期同步放宽；额外做当日分时走势健康筛选（阳线、未冲高大幅回落、未大幅低开，
+  相关字段缺失即拒绝）；荐股当下直接以现价确定买入参考价并立即进入监控。
+- 收盘后触发（如服务器宕机后下午恢复补跑）：跳过当日荐股并标记已处理，
+  避免用全天数据套盘中门槛产生错误推荐。
+
+市场阶段优先由 trading_calendar.infer_market_phase 判定（能识别午休/收盘），
+日历库不可用时按本地时钟兜底。
 
 边界：只做荐股与提醒，不执行任何真实交易。
 """
@@ -20,7 +34,7 @@ import os
 import re
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, time as dt_time, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -58,6 +72,20 @@ TECH_FILTER_MAX_5D_CHANGE = 25.0     # 近 5 日累计涨幅上限（%），A股
 HARD_FILTER_TOP_N = 25               # 硬筛后按活跃度保留的候选数
 TECH_FILTER_TOP_N = 12               # 技术筛后送入 LLM 的候选数
 ALLOWED_CODE_PREFIXES = ("60", "00", "30")  # 沪深主板+创业板；排除科创板/北交所
+
+# 盘中模式相关常数
+# A 股连续竞价时段（worker 的交易时段判断也从这里取，保证 9:30/15:00 只定义一处）
+TRADING_SESSIONS_CN = ((dt_time(9, 30), dt_time(11, 30)), (dt_time(13, 0), dt_time(15, 0)))
+TOTAL_SESSION_MINUTES = 240              # A 股全天连续竞价总分钟数（2 小时 x 2）
+INTRADAY_VOLUME_RATIO = 0.25             # 量额折算系数下限：开盘首 30 分钟成交约占全天 25%（成交前高后低，非线性）
+CHANGE_MIN_RAMP_MINUTES = 30             # 涨幅下限的放宽窗口：开盘后前 30 分钟内按比例放宽（刚开盘大多数股票涨幅未展开）
+INTRADAY_MAX_PULLBACK_PCT = 3.0          # 现价距当日最高点最大回撤（%），过滤"冲高后大幅回落"
+INTRADAY_MIN_OPEN_TO_PRECLOSE = 0.98     # 今开不得低于昨收的比例，过滤"大幅低开硬拉"（多为出货形态）
+
+# 荐股口径（由触发时刻的市场阶段解析而来）
+MODE_PREMARKET = "premarket"             # 盘前：按昨日数据筛选，等开盘回填买入价
+MODE_INTRADAY = "intraday"               # 盘中：按今日实时数据筛选，现价即时定买入价
+MODE_POSTMARKET = "postmarket"           # 收盘后：跳过当日荐股（无法当日买入，且盘中门槛不适用）
 
 
 @dataclass
@@ -145,12 +173,82 @@ def compute_deadline_date(
     return current
 
 
-def passes_hard_filter(row: Dict[str, Any]) -> bool:
+def intraday_elapsed_minutes(t: dt_time) -> int:
+    """计算给定时刻 A 股已完成的连续竞价分钟数。
+
+    参数：
+        t: 当前时刻（A 股时区的本地时间）
+
+    返回：0~240 的整数。开盘前为 0；午休期间为 120（上午已走完）；
+    收盘后为 240。用于按已交易时长折算盘中门槛。
+    """
+    minutes_of = lambda x: x.hour * 60 + x.minute  # noqa: E731
+    now_m = minutes_of(t)
+    elapsed = 0
+    for start, end in TRADING_SESSIONS_CN:
+        elapsed += max(0, min(now_m, minutes_of(end)) - minutes_of(start))
+    return elapsed
+
+
+def intraday_hard_filter_scales(t: dt_time) -> tuple:
+    """按已交易时长计算盘中硬筛的两个折算系数。
+
+    参数：
+        t: 荐股触发时刻
+
+    返回：(量额折算系数, 涨幅下限折算系数)
+    - 量额系数：已交易分钟占全天比例，下限 INTRADAY_VOLUME_RATIO（A 股成交
+      前高后低，开盘首 30 分钟约占全天 25%，故 10:00 前后取 0.25 而非线性 0.125），
+      上限 1.0。作用于成交额门槛与换手率上下限。
+    - 涨幅下限系数：开盘后前 CHANGE_MIN_RAMP_MINUTES 分钟内线性放宽
+      （刚开盘大多数股票当日涨幅未展开，按全天标准 1% 会误杀全市场），
+      之后恢复 1.0。仅作用于涨幅下限，8% 上限任何时刻都有效（排除接近涨停）。
+    """
+    elapsed = intraday_elapsed_minutes(t)
+    amount_scale = min(1.0, max(INTRADAY_VOLUME_RATIO, elapsed / TOTAL_SESSION_MINUTES))
+    change_min_scale = min(1.0, elapsed / CHANGE_MIN_RAMP_MINUTES)
+    return amount_scale, change_min_scale
+
+
+def resolve_pick_mode(phase: str, now_time: dt_time) -> str:
+    """由市场阶段解析荐股口径（纯函数，便于测试）。
+
+    参数：
+        phase:    trading_calendar.MarketPhase 的取值（str 枚举，如 "premarket"/
+                  "intraday"/"lunch_break"/"closing_auction"/"postmarket"；
+                  日历库不可用时为 "unknown"）
+        now_time: 当前时刻（phase 不可用时按时钟兜底）
+
+    返回：MODE_PREMARKET / MODE_INTRADAY / MODE_POSTMARKET 之一。
+    午休与尾盘竞价归入盘中（快照数据仍是当日有效口径）；
+    unknown/non_trading 按本地时钟兜底判断，保证日历库缺失时功能不中断。
+    """
+    if phase == "premarket":
+        return MODE_PREMARKET
+    if phase in ("intraday", "lunch_break", "closing_auction"):
+        return MODE_INTRADAY
+    if phase == "postmarket":
+        return MODE_POSTMARKET
+    # 日历不可用（unknown 等）：按时钟兜底
+    if now_time < TRADING_SESSIONS_CN[0][0]:
+        return MODE_PREMARKET
+    if now_time >= TRADING_SESSIONS_CN[1][1]:
+        return MODE_POSTMARKET
+    return MODE_INTRADAY
+
+
+def passes_hard_filter(row: Dict[str, Any], *, intraday_time: Optional[dt_time] = None) -> bool:
     """判断一条全市场快照记录是否通过硬规则初筛。
 
-    参数 row 为标准化后的字典，键：code/name/price/change_pct/amount/
-    turnover_rate/volume_ratio/float_mv/change_60d（缺失值为 None）。
-    任一关键字段缺失即不通过（宁缺毋滥）。
+    参数：
+        row:           标准化后的字典，键：code/name/price/change_pct/amount/
+                       turnover_rate/volume_ratio/float_mv/change_60d（缺失值为 None）
+        intraday_time: 盘中模式下传触发时刻，None 表示盘前模式。盘中快照的
+                       成交额/换手率是"到目前为止"的累计值，按已交易时长动态
+                       折算门槛（上下限同步折算）；涨幅下限在开盘初期同步放宽。
+                       涨跌幅在盘中自动是今日实时涨幅（"今日正在强"）。
+
+    返回：True 表示通过初筛。任一核心字段缺失即不通过（宁缺毋滥）。
     """
     code = str(row.get("code") or "")
     name = str(row.get("name") or "")
@@ -160,10 +258,17 @@ def passes_hard_filter(row: Dict[str, Any]) -> bool:
     if "ST" in name.upper() or "退" in name:
         return False
 
+    # 盘中模式下成交额/换手率是"到目前为止"的累计值，门槛按已交易时长动态折算；
+    # 量比不折算——它天生就是"当前每分钟量 vs 过去5日每分钟均量"的盘中口径。
+    if intraday_time is None:
+        amount_scale, change_min_scale = 1.0, 1.0
+    else:
+        amount_scale, change_min_scale = intraday_hard_filter_scales(intraday_time)
+
     # 核心字段（价格/涨跌幅/成交额）所有快照源都会提供，缺失即拒绝
     required_checks = (
         ("price", HARD_FILTER_MIN_PRICE, HARD_FILTER_MAX_PRICE),
-        ("change_pct", HARD_FILTER_MIN_CHANGE_PCT, HARD_FILTER_MAX_CHANGE_PCT),
+        ("change_pct", HARD_FILTER_MIN_CHANGE_PCT * change_min_scale, HARD_FILTER_MAX_CHANGE_PCT),
     )
     for key, low, high in required_checks:
         value = row.get(key)
@@ -171,13 +276,13 @@ def passes_hard_filter(row: Dict[str, Any]) -> bool:
             return False
 
     amount = row.get("amount")
-    if amount is None or float(amount) < HARD_FILTER_MIN_AMOUNT:
+    if amount is None or float(amount) < HARD_FILTER_MIN_AMOUNT * amount_scale:
         return False
 
     # 以下字段仅东财等富字段源提供；轻量兜底源（如新浪）缺失时不参与该项判断，
     # 而不是直接拒绝——避免主数据源被限流时兜底源完全无法产出候选。
     optional_checks = (
-        ("turnover_rate", HARD_FILTER_MIN_TURNOVER, HARD_FILTER_MAX_TURNOVER),
+        ("turnover_rate", HARD_FILTER_MIN_TURNOVER * amount_scale, HARD_FILTER_MAX_TURNOVER * amount_scale),
         ("volume_ratio", HARD_FILTER_MIN_VOLUME_RATIO, None),
         ("float_mv", HARD_FILTER_MIN_FLOAT_MV, HARD_FILTER_MAX_FLOAT_MV),
         ("change_60d", None, HARD_FILTER_MAX_60D_CHANGE),
@@ -219,6 +324,71 @@ def passes_technical_filter(closes: List[float]) -> bool:
     if change_5d > TECH_FILTER_MAX_5D_CHANGE:
         return False
     return closes[-1] >= ma10
+
+
+def passes_intraday_health(row: Dict[str, Any]) -> bool:
+    """盘中模式专用：判断当日分时走势是否健康（避免"昨天好、今天崩"）。
+
+    参数：
+        row: 标准化快照字典，需含 price/open/high/pre_close 四个字段。
+             东财与新浪快照源都提供这些列，任一缺失或非正说明该行数据异常
+             （停牌、脏数据等），直接拒绝——这是盘中模式的核心安全闸，
+             宁可错杀不可放行（与硬筛可选字段"缺失跳过"的策略不同）。
+
+    三条规则：
+    1. 现价 >= 今开：当日为阳线，开盘后仍在走强；
+    2. (当日最高 - 现价) / 当日最高 <= INTRADAY_MAX_PULLBACK_PCT%：
+       不是冲高后大幅回落的（回落超阈值说明当日抛压重）；
+    3. 今开 >= 昨收 * INTRADAY_MIN_OPEN_TO_PRECLOSE：排除大幅低开的。
+
+    返回：True 表示当日走势健康；任一字段缺失/非正或任一规则不满足返回 False。
+    """
+    values = {}
+    for key in ("price", "open", "high", "pre_close"):
+        value = row.get(key)
+        if value is None or float(value) <= 0:
+            return False
+        values[key] = float(value)
+
+    if values["price"] < values["open"]:
+        return False
+    if values["open"] < values["pre_close"] * INTRADAY_MIN_OPEN_TO_PRECLOSE:
+        return False
+    if (values["high"] - values["price"]) / values["high"] * 100 > INTRADAY_MAX_PULLBACK_PCT:
+        return False
+    return True
+
+
+def build_close_series(
+    dates: List[Any],
+    closes: List[Any],
+    today_iso: str,
+    current_price: Optional[float] = None,
+) -> List[float]:
+    """构造技术面筛选用的收盘价序列，处理盘中"半根K线"问题。
+
+    盘中拉日线时，部分数据源会把今天尚未走完的实时 bar 作为最后一行返回
+    （且不同源行为不一致），若直接混入均线计算会产生偏差。统一做法：
+    剔除日期 >= 今天的行，只保留截至昨天的完整K线；盘中模式再把快照现价
+    追加到末尾充当"最新收盘"，使 MA 与近5日涨幅都包含今天的实时状态。
+
+    参数：
+        dates:         与 closes 一一对应的日期（datetime 或字符串均可，
+                       转 str 后前 10 位为 YYYY-MM-DD 才能正确比较）
+        closes:        收盘价列表（None 项跳过）
+        today_iso:     今天日期的 ISO 字符串
+        current_price: 盘中模式传快照现价（追加到序列末尾）；盘前传 None
+
+    返回：升序收盘价序列（float 列表）。
+    """
+    series = [
+        float(c)
+        for d, c in zip(dates, closes)
+        if c is not None and str(d)[:10] < today_iso
+    ]
+    if current_price is not None and current_price > 0:
+        series.append(float(current_price))
+    return series
 
 
 def parse_llm_pick_response(text: str, valid_codes: List[str]) -> List[Dict[str, str]]:
@@ -264,14 +434,17 @@ def parse_llm_pick_response(text: str, valid_codes: List[str]) -> List[Dict[str,
 
 # 各数据源中文列名 -> 标准键。东财字段最全；新浪缺换手率/量比/流通市值/60日涨幅，
 # 这些字段在 passes_hard_filter 中按"缺失则跳过该项判断"处理，不会导致新浪兜底完全失效。
+# 今开/最高/昨收 两源都有，供盘中模式的当日走势健康筛选（passes_intraday_health）使用。
 _EM_SNAPSHOT_COLUMN_MAP = {
     "代码": "code", "名称": "name", "最新价": "price", "涨跌幅": "change_pct",
     "成交额": "amount", "换手率": "turnover_rate", "量比": "volume_ratio",
     "流通市值": "float_mv", "60日涨跌幅": "change_60d",
+    "今开": "open", "最高": "high", "昨收": "pre_close",
 }
 _SINA_SNAPSHOT_COLUMN_MAP = {
     "代码": "code", "名称": "name", "最新价": "price", "涨跌幅": "change_pct",
     "成交额": "amount",
+    "今开": "open", "最高": "high", "昨收": "pre_close",
 }
 
 
@@ -357,12 +530,26 @@ def _fetch_spot_snapshot() -> List[Dict[str, Any]]:
     return rows
 
 
-def _rank_hard_filtered(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _rank_hard_filtered(
+    rows: List[Dict[str, Any]], *, intraday_time: Optional[dt_time] = None,
+) -> List[Dict[str, Any]]:
     """对硬筛通过的候选按活跃度排序并截断。
 
+    参数：
+        rows:          标准化快照记录列表
+        intraday_time: 盘中模式下传触发时刻（用于动态折算门槛），None 为盘前模式
+
+    盘中模式额外做当日分时走势健康筛选（先过硬筛再过健康筛，
+    健康筛只用快照已有字段，无额外网络开销）。
     排序依据：量比 × 换手率（越高代表短线资金关注度越高）。
+    返回：截断到 HARD_FILTER_TOP_N 的候选列表。
     """
-    passed = [row for row in rows if passes_hard_filter(row)]
+    intraday = intraday_time is not None
+    passed = [row for row in rows if passes_hard_filter(row, intraday_time=intraday_time)]
+    if intraday:
+        healthy = [row for row in passed if passes_intraday_health(row)]
+        logger.info("[短线荐股] 盘中走势健康筛选：%d -> %d", len(passed), len(healthy))
+        passed = healthy
     passed.sort(
         key=lambda r: float(r.get("volume_ratio") or 0) * float(r.get("turnover_rate") or 0),
         reverse=True,
@@ -372,14 +559,24 @@ def _rank_hard_filtered(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return passed[:HARD_FILTER_TOP_N]
 
 
-def _apply_technical_filter(candidates: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _apply_technical_filter(
+    candidates: List[Dict[str, Any]],
+    *,
+    today: date,
+    intraday: bool = False,
+) -> List[Dict[str, Any]]:
     """对候选逐只拉取日线并做技术面筛选（均线多头+未超涨）。
+
+    统一通过 build_close_series 剔除日线里今天的"半根K线"（盘中拉取时
+    部分源会返回当日实时 bar，混入均线计算会有偏差）；盘中模式再把快照
+    现价追加为最新价，使"现价站上 MA10 / 近5日涨幅"都反映今天的实时状态。
 
     单只失败不影响整体（跳过该股）；结果截断到 TECH_FILTER_TOP_N。
     """
     from data_provider import DataFetcherManager
 
     manager = DataFetcherManager()
+    today_iso = today.isoformat()
     survivors: List[Dict[str, Any]] = []
     for row in candidates:
         if len(survivors) >= TECH_FILTER_TOP_N:
@@ -387,7 +584,9 @@ def _apply_technical_filter(candidates: List[Dict[str, Any]]) -> List[Dict[str, 
         code = row.get("code") or ""
         try:
             df, _source = manager.get_daily_data(code, days=40)
-            closes = [float(v) for v in df["close"].tolist() if v is not None]
+            current_price = float(row.get("price") or 0) if intraday else None
+            closes = build_close_series(
+                df["date"].tolist(), df["close"].tolist(), today_iso, current_price)
             if passes_technical_filter(closes):
                 survivors.append(row)
         except Exception as exc:
@@ -396,8 +595,23 @@ def _apply_technical_filter(candidates: List[Dict[str, Any]]) -> List[Dict[str, 
     return survivors
 
 
-def _build_llm_prompt(candidates: List[Dict[str, Any]], pick_count: int, config: Any) -> str:
-    """构造 LLM 精选提示词：候选行情表 + A股复合策略要点 + JSON 输出要求。"""
+def _build_llm_prompt(
+    candidates: List[Dict[str, Any]], pick_count: int, config: Any, *, intraday: bool = False,
+) -> str:
+    """构造 LLM 精选提示词：候选行情表 + A股复合策略要点 + JSON 输出要求。
+
+    盘中模式下涨幅列是今日实时涨幅（非昨日），措辞相应切换，
+    并附今开/当日最高两列供 AI 判断当日分时形态。
+    """
+    change_label = "今日涨幅%" if intraday else "昨日涨幅%"
+    momentum_rule = (
+        "2. 量价配合优先：量比高、换手适中（3%-10%）、今日放量走强（数据为盘中实时口径，"
+        "换手率是到当前时刻的累计值）；" if intraday
+        else "2. 量价配合优先：量比高、换手适中（3%-10%）、昨日放量上涨；"
+    )
+    header_cols = f"代码|名称|现价|{change_label}|换手率%|量比|流通市值亿|60日涨幅%"
+    if intraday:
+        header_cols += "|今开|当日最高"
     lines = [
         f"你是A股短线交易顾问。以下是今日通过量价初筛和均线多头筛选的 {len(candidates)} 只候选股，",
         f"请按\"A股复合策略\"思路精选 {pick_count} 只做 2-3 天短线（当天买入，"
@@ -405,19 +619,22 @@ def _build_llm_prompt(candidates: List[Dict[str, Any]], pick_count: int, config:
         "",
         "精选原则：",
         "1. 优先主线板块内的强势股，避开跟风股与单日冲高股；",
-        "2. 量价配合优先：量比高、换手适中（3%-10%）、昨日放量上涨；",
+        momentum_rule,
         "3. 规避风险：明显连续大涨后的高位股、有减持/利空传闻的股不选；",
         "4. 行业适当分散，避免5只集中在同一板块。",
         "",
-        "候选列表（代码|名称|现价|昨日涨幅%|换手率%|量比|流通市值亿|60日涨幅%）：",
+        f"候选列表（{header_cols}）：",
     ]
     for row in candidates:
         float_mv_yi = (row.get("float_mv") or 0) / 1e8
-        lines.append(
+        line = (
             f"{row.get('code')}|{row.get('name')}|{row.get('price')}|"
             f"{row.get('change_pct')}|{row.get('turnover_rate')}|{row.get('volume_ratio')}|"
             f"{float_mv_yi:.0f}|{row.get('change_60d')}"
         )
+        if intraday:
+            line += f"|{row.get('open')}|{row.get('high')}"
+        lines.append(line)
     lines += [
         "",
         f"只输出一个 JSON 数组，恰好 {pick_count} 个元素，不要输出其他文字：",
@@ -426,7 +643,9 @@ def _build_llm_prompt(candidates: List[Dict[str, Any]], pick_count: int, config:
     return "\n".join(lines)
 
 
-def _llm_select(candidates: List[Dict[str, Any]], config: Any) -> List[Dict[str, str]]:
+def _llm_select(
+    candidates: List[Dict[str, Any]], config: Any, *, intraday: bool = False,
+) -> List[Dict[str, str]]:
     """调用 LLM 从候选中精选 N 只；LLM 不可用或解析失败时按排序兜底。"""
     pick_count = min(int(config.swing_picks_count), len(candidates))
     selected: List[Dict[str, str]] = []
@@ -434,7 +653,7 @@ def _llm_select(candidates: List[Dict[str, Any]], config: Any) -> List[Dict[str,
         from src.analyzer import GeminiAnalyzer
 
         analyzer = GeminiAnalyzer(config)
-        prompt = _build_llm_prompt(candidates, pick_count, config)
+        prompt = _build_llm_prompt(candidates, pick_count, config, intraday=intraday)
         text = analyzer.generate_text(prompt, max_tokens=1024, temperature=0.3)
         selected = parse_llm_pick_response(text or "", [str(r.get("code")) for r in candidates])
     except Exception as exc:
@@ -513,23 +732,113 @@ def picks_to_state(state: Dict[str, Any], picks: List[SwingPick]) -> Dict[str, A
 # 对外主入口
 # ---------------------------------------------------------------------------
 
+def apply_entry_pricing(pick: SwingPick, price: float, config: Any) -> None:
+    """按给定买入价为一条荐股记录定价并进入监控状态（service/worker 共用）。
+
+    参数：
+        pick:   荐股记录（就地修改 entry_price/target_price/stop_price/status）
+        price:  买入参考价。盘中荐股传荐股当下的现价；盘前模式由 worker
+                在开盘后传开盘价（缺失时最新价）
+        config: 全局 Config（读取止盈/止损百分比）
+
+    返回：无（就地修改 pick）。
+    异常：price 或配置的止盈/止损百分比非正时抛 ValueError（由 compute_* 抛出）。
+    """
+    pick.entry_price = round(float(price), 2)
+    pick.target_price = compute_target_price(float(price), float(config.swing_picks_take_profit_pct))
+    pick.stop_price = compute_stop_price(float(price), float(config.swing_picks_stop_loss_pct))
+    pick.status = PICK_STATUS_OPEN
+
+
+def _build_new_picks(
+    selected: List[Dict[str, str]],
+    row_by_code: Dict[str, Dict[str, Any]],
+    active_codes: set,
+    today: date,
+    deadline: date,
+    config: Any,
+    intraday: bool,
+) -> List[SwingPick]:
+    """把 LLM 精选结果构造成新的荐股持仓记录列表。
+
+    参数：
+        selected:     精选结果（code + reason）
+        row_by_code:  代码 -> 标准化快照记录（取名称/现价）
+        active_codes: 已在监控中的代码集合（跳过重复推荐）
+        today:        荐股日
+        deadline:     最长持有截止日
+        config:       全局 Config
+        intraday:     盘中模式时直接以现价定买入价并进入监控
+                      （现价经硬筛保证在 3-100 元区间，必为正数）
+
+    返回：新生成的 SwingPick 列表。
+    """
+    new_picks: List[SwingPick] = []
+    for item in selected:
+        code = item["code"]
+        if code in active_codes:
+            logger.info("[短线荐股] %s 已在持仓监控中，跳过重复推荐", code)
+            continue
+        row = row_by_code.get(code) or {}
+        pick = SwingPick(
+            code=code,
+            name=str(row.get("name") or ""),
+            pick_date=today.isoformat(),
+            ref_price=float(row.get("price") or 0),
+            deadline_date=deadline.isoformat(),
+            reason=item.get("reason") or "",
+        )
+        if intraday:
+            # 盘中即时定价：开盘价已是几十分钟前的旧价格，用现价才不失真
+            apply_entry_pricing(pick, pick.ref_price, config)
+        new_picks.append(pick)
+    return new_picks
+
+
+def _skip_postmarket_pick(today: date, notify: bool) -> None:
+    """收盘后触发时跳过当日荐股：标记已处理避免 worker 反复重试，并说明原因。
+
+    参数：
+        today:  当天日期
+        notify: 是否推送说明通知
+
+    返回：无。
+    """
+    logger.warning("[短线荐股] 触发时已收盘，跳过今日荐股（全天数据不适用盘中门槛，且当日已无法买入）")
+    state = load_state()
+    state["last_pick_date"] = today.isoformat()
+    save_state(state)
+    if notify:
+        _send_notification("【短线荐股】今日触发时已收盘，跳过荐股；明日将按计划正常运行。")
+
+
 def generate_daily_picks(config: Any, *, notify: bool = True) -> List[SwingPick]:
     """执行一次完整的"每日荐股"流程并落盘、推送。
 
-    流程：快照 -> 硬筛 -> 技术筛 -> LLM 精选 -> 生成持仓记录 -> 保存 -> 推送。
+    流程：快照 -> 硬筛(盘中含走势健康筛) -> 技术筛 -> LLM 精选 -> 生成持仓记录 -> 保存 -> 推送。
+    模式：按触发时刻的市场阶段自动选择盘前/盘中口径（见模块顶部说明）；
+    收盘后触发则跳过当日荐股。
 
     参数：
         config: 全局 Config 对象（读取 swing_picks_* 配置）
         notify: 是否推送通知（CLI dry-run 时传 False）
 
-    返回：本次新生成的荐股列表；筛选无结果时返回空列表并推送说明。
+    返回：本次新生成的荐股列表；筛选无结果或已收盘时返回空列表并推送说明。
     """
-    from src.core.trading_calendar import get_market_now, is_market_open
+    from src.core.trading_calendar import get_market_now, infer_market_phase, is_market_open
 
-    today = get_market_now("cn").date()
+    market_now = get_market_now("cn")
+    today = market_now.date()
     if not is_market_open("cn", today):
         logger.info("[短线荐股] 今天不是 A 股交易日，跳过荐股")
         return []
+
+    mode = resolve_pick_mode(str(infer_market_phase("cn", market_now).value), market_now.time())
+    if mode == MODE_POSTMARKET:
+        _skip_postmarket_pick(today, notify)
+        return []
+    intraday = mode == MODE_INTRADAY
+    logger.info("[短线荐股] 本次按%s口径荐股", "盘中" if intraday else "盘前")
 
     rows = _fetch_spot_snapshot()
     if not rows:
@@ -538,14 +847,16 @@ def generate_daily_picks(config: Any, *, notify: bool = True) -> List[SwingPick]
             _send_notification("【短线荐股】今日行情快照获取失败，未能生成荐股，请稍后手动重试。")
         return []
 
-    candidates = _apply_technical_filter(_rank_hard_filtered(rows))
+    intraday_time = market_now.time() if intraday else None
+    candidates = _apply_technical_filter(
+        _rank_hard_filtered(rows, intraday_time=intraday_time), today=today, intraday=intraday)
     if not candidates:
         logger.warning("[短线荐股] 今日无候选通过筛选（弱市属正常现象）")
         if notify:
             _send_notification("【短线荐股】今日全市场无股票通过筛选条件，建议空仓观望。")
         return []
 
-    selected = _llm_select(candidates, config)
+    selected = _llm_select(candidates, config, intraday=intraday)
     row_by_code = {str(r.get("code")): r for r in candidates}
     is_trading_day = lambda d: is_market_open("cn", d)  # noqa: E731
     deadline = compute_deadline_date(today, int(config.swing_picks_max_hold_days), is_trading_day)
@@ -553,21 +864,7 @@ def generate_daily_picks(config: Any, *, notify: bool = True) -> List[SwingPick]
     state = load_state()
     existing = picks_from_state(state)
     active_codes = {p.code for p in existing if p.status in ACTIVE_STATUSES}
-    new_picks: List[SwingPick] = []
-    for item in selected:
-        code = item["code"]
-        if code in active_codes:
-            logger.info("[短线荐股] %s 已在持仓监控中，跳过重复推荐", code)
-            continue
-        row = row_by_code.get(code) or {}
-        new_picks.append(SwingPick(
-            code=code,
-            name=str(row.get("name") or ""),
-            pick_date=today.isoformat(),
-            ref_price=float(row.get("price") or 0),
-            deadline_date=deadline.isoformat(),
-            reason=item.get("reason") or "",
-        ))
+    new_picks = _build_new_picks(selected, row_by_code, active_codes, today, deadline, config, intraday)
 
     state["last_pick_date"] = today.isoformat()
     state = picks_to_state(state, existing + new_picks)
@@ -590,7 +887,13 @@ def format_picks_notification(picks: List[SwingPick], config: Any) -> str:
         "",
     ]
     for i, p in enumerate(picks, 1):
-        lines.append(f"**{i}. {p.name}（{p.code}）** 参考价 {p.ref_price} 元")
+        if p.entry_price:
+            # 盘中模式：荐股当下已按现价定好买入参考价与止盈/止损价（不再重复显示参考价）
+            lines.append(
+                f"**{i}. {p.name}（{p.code}）** 买入参考 {p.entry_price} 元"
+                f"｜止盈 {p.target_price} 元｜止损 {p.stop_price} 元")
+        else:
+            lines.append(f"**{i}. {p.name}（{p.code}）** 参考价 {p.ref_price} 元")
         lines.append(f"   - 理由：{p.reason}")
     lines += [
         "",

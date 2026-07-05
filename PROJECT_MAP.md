@@ -22,8 +22,8 @@
   - `src/core/` → 主流程编排（分析流水线、大盘复盘、回测引擎、交易日历、配置）
   - `src/agent/` → 多智能体分析（技术面/情报/风险/决策 agent、策略技能加载与路由、工具集）
   - `src/services/` → 业务服务层（分析、组合、告警、决策信号、选股 AlphaSift 桥接等）
-  - `swing_picks_service.py` → 短线荐股：每日从全A股筛选+AI精选N只2-3天短线候选，管理持仓状态
-  - `swing_picks_worker.py` → 短线荐股后台监控：盘前触发荐股、盘中到价/到期推送卖出提醒
+  - `swing_picks_service.py` → 短线荐股：每日从全A股筛选+AI精选N只2-3天短线候选（盘前/盘中双模式自动切换），管理持仓状态
+  - `swing_picks_worker.py` → 短线荐股后台监控：定时触发荐股、盘中到价/到期推送卖出提醒
   - `src/repositories/` → 数据库读写层
   - `src/llm/` → 大模型调用封装
   - `src/reports/`、`src/schemas/` → 报告生成与数据结构定义
